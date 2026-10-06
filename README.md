@@ -30,10 +30,12 @@ The accepted concrete assembly is illustrated by Eon's
 Select Git dependencies by exact accepted commit and package name; crates are
 not published to a registry. Eon owns product composition and distribution.
 
-The Codex quota worker keeps last reset-bounded values marked `old` during an
-authenticated account refresh and discards a response started before that
-update. Sign-out clears quota; each verified read replaces the complete
-observation. Reads remain at least one minute apart. Eon's
+The Codex quota worker retains recorded values through authenticated account
+refreshes and discards a response started before that update. A failed refresh
+marks retained values `old` only when the last successful observation is more
+than one hour old; younger values keep their normal label. Sign-out clears
+quota; each verified read replaces the complete observation. Reads remain at
+least one minute apart. Failed windows expire at their reset. Eon's
 [EON-C22](https://github.com/Yazelix/eon/blob/edge/docs/CONTRACTS.md#eon-c22--trustworthy-codex-quota-in-the-eon-bar)
 owns the product contract.
 
@@ -100,10 +102,10 @@ artifacts.
 
 | Surface | Lines |
 |---|---:|
-| Rust source and tests | 13,396 |
+| Rust source and tests | 13,445 |
 | Cargo manifests | 26 |
 | Agent guidelines | 38 |
-| README | 109 |
+| README | 111 |
 | License and notice | 209 |
 | Repository ignore rules | 1 |
-| **Total** | **13,779** |
+| **Total** | **13,830** |

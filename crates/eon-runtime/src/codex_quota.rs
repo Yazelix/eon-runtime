@@ -59,8 +59,7 @@ impl Provider {
     pub(crate) fn snapshot(&self) -> Option<CodexQuota> {
         let now = epoch_seconds()?;
         let mut quota = self.quota.lock().ok()?;
-        expire_stale(&mut quota, now);
-        quota.clone()
+        snapshot_at(&mut quota, now)
     }
 }
 
@@ -220,9 +219,7 @@ fn run_session(
                                 .unwrap_or_else(Instant::now);
                         }
                         Message::AccountUpdated(authenticated) => {
-                            if authenticated {
-                                mark_stale(quota);
-                            } else {
+                            if !authenticated {
                                 publish(quota, None);
                             }
                             discard_pending |= pending.is_some();
@@ -479,6 +476,18 @@ fn expire_stale(quota: &mut Option<CodexQuota>, now: u64) {
     }
 }
 
+fn snapshot_at(quota: &mut Option<CodexQuota>, now: u64) -> Option<CodexQuota> {
+    expire_stale(quota, now);
+    let mut snapshot = quota.clone()?;
+    // Keep internal failure evidence while recent values retain their normal label.
+    if snapshot.state == CodexQuotaState::Stale
+        && now.saturating_sub(snapshot.observed_at) <= 60 * 60
+    {
+        snapshot.state = CodexQuotaState::Fresh;
+    }
+    Some(snapshot)
+}
+
 fn epoch_seconds() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -585,6 +594,39 @@ mod tests {
     }
 
     #[test]
+    fn old_requires_failure_and_more_than_one_hour_since_success() {
+        let observed_at = 1_800_000_000;
+        let mut quota = Some(CodexQuota {
+            state: CodexQuotaState::Fresh,
+            observed_at,
+            windows: vec![CodexQuotaWindow {
+                duration_minutes: 300,
+                remaining_percent: 75,
+                resets_at: Some(observed_at + 7200),
+            }],
+        });
+        // Age alone does not make a healthy observation old.
+        assert_eq!(
+            snapshot_at(&mut quota, observed_at + 3601).unwrap().state,
+            CodexQuotaState::Fresh
+        );
+        quota.as_mut().unwrap().state = CodexQuotaState::Stale;
+        for age in [0, 3599, 3600] {
+            let snapshot = snapshot_at(&mut quota, observed_at + age).unwrap();
+            assert_eq!(snapshot.state, CodexQuotaState::Fresh);
+            assert_eq!(snapshot.observed_at, observed_at);
+            assert_eq!(snapshot.windows[0].remaining_percent, 75);
+            // Suppressing the label must not erase the failed-refresh evidence.
+            assert_eq!(quota.as_ref().unwrap().state, CodexQuotaState::Stale);
+        }
+        assert_eq!(
+            snapshot_at(&mut quota, observed_at + 3601).unwrap().state,
+            CodexQuotaState::Stale
+        );
+        assert!(snapshot_at(&mut quota, observed_at + 7200).is_none());
+    }
+
+    #[test]
     fn provider_lifecycle_is_fail_closed_and_bounded() {
         let root = std::env::temp_dir().join(format!("eon-codex-quota-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -640,27 +682,22 @@ printf stopped > '{}'
         let provider = Provider::start_with(program.clone().into_os_string(), timings);
         let fresh = wait_for(&provider, Some(CodexQuotaState::Fresh)).unwrap();
         assert_eq!(fresh.windows[0].remaining_percent, 75);
-        let stale = wait_for(&provider, Some(CodexQuotaState::Stale)).unwrap();
-        assert_eq!(stale.windows, fresh.windows);
-        assert_eq!(stale.observed_at, fresh.observed_at);
-        let fresh = wait_for(&provider, Some(CodexQuotaState::Fresh)).unwrap();
-        assert_eq!(fresh.windows[0].remaining_percent, 50);
-        let stale = wait_for(&provider, Some(CodexQuotaState::Stale)).unwrap();
-        assert_eq!(stale.windows, fresh.windows);
         let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_replacement = false;
         loop {
             let quota = provider
                 .snapshot()
                 .expect("authenticated refresh stays visible");
-            if quota.state == CodexQuotaState::Fresh {
-                assert_eq!(
-                    quota.windows[0].remaining_percent, 60,
-                    "discard obsolete reply"
-                );
-                break;
+            assert_eq!(quota.state, CodexQuotaState::Fresh);
+            match quota.windows[0].remaining_percent {
+                75 => assert!(!saw_replacement),
+                50 => saw_replacement = true,
+                60 => {
+                    assert!(saw_replacement);
+                    break;
+                }
+                value => panic!("obsolete or unexpected quota: {value}"),
             }
-            assert_eq!(quota.state, CodexQuotaState::Stale);
-            assert_eq!(quota.windows, fresh.windows);
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(5));
         }
@@ -699,8 +736,20 @@ done
         );
         let provider = Provider::start_with(program.clone().into_os_string(), timings);
         wait_for(&provider, Some(CodexQuotaState::Fresh));
-        let stale = wait_for(&provider, Some(CodexQuotaState::Stale)).unwrap();
-        assert_eq!(stale.windows.len(), 1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let recent = loop {
+            let snapshot = provider.snapshot().unwrap();
+            assert_eq!(snapshot.state, CodexQuotaState::Fresh);
+            if snapshot.windows.len() == 1 {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "failed refresh did not retain bounded data"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(recent.windows[0].remaining_percent, 90);
         let deadline = Instant::now() + Duration::from_millis(300);
         while fs::read_to_string(&launches).unwrap() != "xx" && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
