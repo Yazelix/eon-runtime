@@ -30,11 +30,20 @@ The accepted concrete assembly is illustrated by Eon's
 Select Git dependencies by exact accepted commit and package name; crates are
 not published to a registry. Eon owns product composition and distribution.
 
+The Codex quota worker keeps last reset-bounded values marked `old` during an
+authenticated account refresh and discards a response started before that
+update. Sign-out clears quota; each verified read replaces the complete
+observation. Reads remain at least one minute apart. Eon's
+[EON-C22](https://github.com/Yazelix/eon/blob/edge/docs/CONTRACTS.md#eon-c22--trustworthy-codex-quota-in-the-eon-bar)
+owns the product contract.
+
 ## Package provenance
 
 The transfer source is Eon
 [`e431d75`](https://github.com/Yazelix/eon/commit/e431d7583c84ff574054d2edf556e9827114987e).
-Both complete crate trees, including manifests and unit tests, are unchanged:
+The initial transfer at
+[`b8f18b4`](https://github.com/Yazelix/eon-runtime/commit/b8f18b4374ca0818a64d9cac6a3fcd02d9f2f2aa)
+copied both complete crate trees, including manifests and unit tests:
 
 | Package | Original Git subtree |
 |---|---|
@@ -57,10 +66,9 @@ build script or workspace-inherited settings. The root workspace uses resolver
 3 and declares no shared metadata, dependencies, patches or build profiles.
 Changes to those facts require renewed package/build-input evidence.
 
-Eon's `eon-runtime-producer-68hq` holds the exact accepted producer revision and
-verification evidence. Consumer rebinding and installed Eon cutover are separate
-stages. Eon's local copies at `e431d75` remain frozen until that cutover; runtime
-evolution has one owner here.
+Eon's `eon-runtime-producer-68hq` holds the accepted transfer revision and
+verification evidence. Runtime evolution has one owner here; Eon owns consumer
+selection and installed-product proof under independently pinned packages.
 
 ## Development
 
@@ -92,10 +100,10 @@ artifacts.
 
 | Surface | Lines |
 |---|---:|
-| Rust source and tests | 13,367 |
+| Rust source and tests | 13,396 |
 | Cargo manifests | 26 |
 | Agent guidelines | 38 |
-| README | 101 |
+| README | 109 |
 | License and notice | 209 |
 | Repository ignore rules | 1 |
-| **Total** | **13,742** |
+| **Total** | **13,779** |

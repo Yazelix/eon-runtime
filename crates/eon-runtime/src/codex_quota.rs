@@ -81,9 +81,8 @@ fn run(
     stop: mpsc::Receiver<()>,
 ) {
     let mut retry = timings.refresh;
-    let mut account = None;
     loop {
-        match run_session(&program, timings, &quota, &stop, &mut account) {
+        match run_session(&program, timings, &quota, &stop) {
             SessionEnd::Stopped => return,
             SessionEnd::Failed { published } => {
                 if published {
@@ -110,7 +109,6 @@ fn run_session(
     timings: Timings,
     quota: &Arc<Mutex<Option<CodexQuota>>>,
     stop: &mpsc::Receiver<()>,
-    account: &mut Option<String>,
 ) -> SessionEnd {
     let mut child = match Command::new(program)
         .args(["app-server", "--stdio"])
@@ -137,6 +135,7 @@ fn run_session(
     let mut initialized = false;
     let mut deadline = Instant::now() + timings.timeout;
     let mut pending = None;
+    let mut discard_pending = false;
     let mut next_id = 1_u64;
     let mut next_read = Instant::now();
     let mut last_read = None;
@@ -188,6 +187,12 @@ fn run_session(
                             next_read = Instant::now();
                         }
                         Message::Quota(result) => {
+                            // An account update makes an already-started read obsolete.
+                            if discard_pending {
+                                pending = None;
+                                discard_pending = false;
+                                continue;
+                            }
                             let observed_at = match epoch_seconds() {
                                 Some(value) => value,
                                 None => {
@@ -196,7 +201,7 @@ fn run_session(
                                     );
                                 }
                             };
-                            let (new_account, fresh) = match normalize(&result, observed_at) {
+                            let fresh = match normalize(&result, observed_at) {
                                 Ok(value) => value,
                                 Err(()) => {
                                     return fail_session(
@@ -204,15 +209,6 @@ fn run_session(
                                     );
                                 }
                             };
-                            if let Some(new_account) = new_account {
-                                if account
-                                    .as_ref()
-                                    .is_some_and(|current| current != &new_account)
-                                {
-                                    publish(quota, None);
-                                }
-                                *account = Some(new_account);
-                            }
                             publish(quota, Some(fresh));
                             published = true;
                             pending = None;
@@ -223,12 +219,13 @@ fn run_session(
                                 .map(|read| read + timings.refresh)
                                 .unwrap_or_else(Instant::now);
                         }
-                        Message::AccountUpdated => {
-                            *account = None;
-                            publish(quota, None);
-                            if pending.is_some() {
-                                return fail_session(&mut child, input, quota, published, timings);
+                        Message::AccountUpdated(authenticated) => {
+                            if authenticated {
+                                mark_stale(quota);
+                            } else {
+                                publish(quota, None);
                             }
+                            discard_pending |= pending.is_some();
                             next_read = last_read
                                 .map(|read| read + timings.refresh)
                                 .unwrap_or_else(Instant::now);
@@ -255,7 +252,7 @@ enum Message {
     Initialized,
     Quota(Value),
     RateLimitsUpdated,
-    AccountUpdated,
+    AccountUpdated(bool),
     Other,
 }
 
@@ -282,18 +279,19 @@ fn parse_message(line: &[u8], initialized: bool, pending: Option<u64>) -> Result
     let method = object.get("method").and_then(Value::as_str).ok_or(())?;
     Ok(match method {
         "account/rateLimits/updated" => Message::RateLimitsUpdated,
-        "account/updated" => Message::AccountUpdated,
+        "account/updated" => Message::AccountUpdated(
+            object
+                .get("params")
+                .and_then(|params| params.get("authMode"))
+                .and_then(Value::as_str)
+                == Some("chatgpt"),
+        ),
         _ => Message::Other,
     })
 }
 
-fn normalize(result: &Value, observed_at: u64) -> Result<(Option<String>, CodexQuota), ()> {
+fn normalize(result: &Value, observed_at: u64) -> Result<CodexQuota, ()> {
     let object = result.as_object().ok_or(())?;
-    let account = match object.get("accountId") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(value)) if value.len() <= 1024 => Some(value.clone()),
-        _ => return Err(()),
-    };
     let state = match object.get("ordinaryUsageAllowed") {
         Some(Value::Bool(true)) => CodexQuotaState::Fresh,
         Some(Value::Bool(false)) => CodexQuotaState::Blocked,
@@ -301,14 +299,11 @@ fn normalize(result: &Value, observed_at: u64) -> Result<(Option<String>, CodexQ
         _ => return Err(()),
     };
     if state != CodexQuotaState::Fresh {
-        return Ok((
-            account,
-            CodexQuota {
-                state,
-                observed_at,
-                windows: Vec::new(),
-            },
-        ));
+        return Ok(CodexQuota {
+            state,
+            observed_at,
+            windows: Vec::new(),
+        });
     }
     let codex_bucket = match object.get("rateLimitsByLimitId") {
         None | Some(Value::Null) => None,
@@ -329,14 +324,11 @@ fn normalize(result: &Value, observed_at: u64) -> Result<(Option<String>, CodexQ
     if windows.is_empty() {
         return Err(());
     }
-    Ok((
-        account,
-        CodexQuota {
-            state,
-            observed_at,
-            windows,
-        },
-    ))
+    Ok(CodexQuota {
+        state,
+        observed_at,
+        windows,
+    })
 }
 
 fn normalize_window(value: &Value, observed_at: u64) -> Result<CodexQuotaWindow, ()> {
@@ -526,8 +518,7 @@ mod tests {
             r#"{"ordinaryUsageAllowed":true,"accountId":"private","rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1800003600},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":null}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":10,"windowDurationMins":60,"resetsAt":1800007200},"secondary":{"usedPercent":20,"windowDurationMins":60,"resetsAt":1800010800}}},"rateLimitResetCredits":{"availableCount":4},"rateLimitUpsell":{"secret":"ignored"}}"#,
         )
         .unwrap();
-        let (account, quota) = normalize(&result, observed).unwrap();
-        assert_eq!(account.as_deref(), Some("private"));
+        let quota = normalize(&result, observed).unwrap();
         assert_eq!(quota.state, CodexQuotaState::Fresh);
         assert_eq!(quota.windows.len(), 2);
         assert_eq!(quota.windows[0].remaining_percent, 90);
@@ -542,7 +533,7 @@ mod tests {
                 "{{\"ordinaryUsageAllowed\":{permission},\"accountId\":null}}"
             ))
             .unwrap();
-            let (_, quota) = normalize(&value, observed).unwrap();
+            let quota = normalize(&value, observed).unwrap();
             assert_eq!(quota.state, state);
             assert!(quota.windows.is_empty());
         }
@@ -579,6 +570,18 @@ mod tests {
             Ok(Message::Other)
         ));
         assert!(parse_message(b"{\"id\":2,\"result\":{}}", true, Some(1)).is_err());
+        for params in [
+            r#"{"authMode":null}"#,
+            r#"{"authMode":"apikey"}"#,
+            "{}",
+            "[]",
+        ] {
+            let line = format!(r#"{{"method":"account/updated","params":{params}}}"#);
+            assert!(matches!(
+                parse_message(line.as_bytes(), true, None),
+                Ok(Message::AccountUpdated(false))
+            ));
+        }
     }
 
     #[test]
@@ -606,13 +609,19 @@ while IFS= read -r line; do
       if [ "$reads" = 1 ]; then
         printf '%s\n' '{{"id":1,"result":{{"ordinaryUsageAllowed":true,"accountId":"private-a","rateLimits":{{"primary":{{"usedPercent":25,"windowDurationMins":300,"resetsAt":4000000000}},"secondary":null}}}}}}'
         sleep 0.05
-        printf '%s\n' '{{"method":"account/updated","params":{{}}}}'
+        printf '%s\n' '{{"method":"account/updated","params":{{"authMode":"chatgpt"}}}}'
       elif [ "$reads" = 2 ]; then
-        printf '%s\n' '{{"id":2,"result":{{"ordinaryUsageAllowed":false,"accountId":"private-b"}}}}'
-      else
-        printf '%s\n' '{{"method":"account/updated","params":{{}}}}'
+        printf '%s\n' '{{"id":2,"result":{{"ordinaryUsageAllowed":true,"accountId":"private-b","rateLimits":{{"primary":{{"usedPercent":50,"windowDurationMins":300,"resetsAt":4000000000}}}}}}}}'
         sleep 0.05
-        printf '%s\n' '{{"id":3,"result":{{"ordinaryUsageAllowed":true,"accountId":"private-b","rateLimits":{{"primary":{{"usedPercent":5,"windowDurationMins":300,"resetsAt":4000000000}}}}}}}}'
+        printf '%s\n' '{{"method":"account/updated","params":{{"authMode":"chatgpt"}}}}'
+      elif [ "$reads" = 3 ]; then
+        printf '%s\n' '{{"method":"account/updated","params":{{"authMode":"chatgpt"}}}}'
+        sleep 0.05
+        printf '%s\n' '{{"id":3,"result":{{"ordinaryUsageAllowed":true,"accountId":"private-a","rateLimits":{{"primary":{{"usedPercent":5,"windowDurationMins":300,"resetsAt":4000000000}}}}}}}}'
+      elif [ "$reads" = 4 ]; then
+        printf '%s\n' '{{"id":4,"result":{{"ordinaryUsageAllowed":true,"accountId":"private-c","rateLimits":{{"primary":{{"usedPercent":40,"windowDurationMins":300,"resetsAt":4000000000}}}}}}}}'
+        sleep 0.05
+        printf '%s\n' '{{"method":"account/updated","params":{{"authMode":null}}}}'
       fi ;;
   esac
 done
@@ -631,11 +640,31 @@ printf stopped > '{}'
         let provider = Provider::start_with(program.clone().into_os_string(), timings);
         let fresh = wait_for(&provider, Some(CodexQuotaState::Fresh)).unwrap();
         assert_eq!(fresh.windows[0].remaining_percent, 75);
+        let stale = wait_for(&provider, Some(CodexQuotaState::Stale)).unwrap();
+        assert_eq!(stale.windows, fresh.windows);
+        assert_eq!(stale.observed_at, fresh.observed_at);
+        let fresh = wait_for(&provider, Some(CodexQuotaState::Fresh)).unwrap();
+        assert_eq!(fresh.windows[0].remaining_percent, 50);
+        let stale = wait_for(&provider, Some(CodexQuotaState::Stale)).unwrap();
+        assert_eq!(stale.windows, fresh.windows);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let quota = provider
+                .snapshot()
+                .expect("authenticated refresh stays visible");
+            if quota.state == CodexQuotaState::Fresh {
+                assert_eq!(
+                    quota.windows[0].remaining_percent, 60,
+                    "discard obsolete reply"
+                );
+                break;
+            }
+            assert_eq!(quota.state, CodexQuotaState::Stale);
+            assert_eq!(quota.windows, fresh.windows);
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
         wait_for(&provider, None);
-        wait_for(&provider, Some(CodexQuotaState::Blocked));
-        wait_for(&provider, None);
-        thread::sleep(Duration::from_millis(75));
-        assert!(provider.snapshot().is_none());
         drop(provider);
         assert_eq!(fs::read_to_string(&stopped).unwrap(), "stopped");
 
