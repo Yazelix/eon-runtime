@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/eon-runtime", "crates/eon-workspace-protocol"]
+resolver = "3"

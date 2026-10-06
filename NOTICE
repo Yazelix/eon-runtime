@@ -1,0 +1,8 @@
+Eon Runtime
+
+The runtime and EONW source was transferred without modification from
+https://github.com/Yazelix/eon at e431d7583c84ff574054d2edf556e9827114987e.
+The original Apache-2.0 license is retained in LICENSE.
+
+Original runtime crate tree: 3dcfef6bf31758233f2a33eb31d5184ebeae9843
+Original EONW crate tree: 8409c419a3496d6f01eeef65295f5d95b943313e
