@@ -433,38 +433,38 @@ fn print_help(inputs: &Inputs) -> Result<i32, String> {
 
 {heading}Start{reset}
   {command}eon{reset}                                         Open or present the workspace
-  {command}run [-- COMMAND...]{reset}                          Start a fresh workspace
+  {command}run [-- COMMAND...]{reset}                         Start a fresh workspace
 
 {heading}Windows{reset}
   {command}window new{reset}                                  Open an independent window
   {command}window attach ID{reset}                            Reopen a window
-  {command}window stop ID [--json]{reset}                      End that window's Sessions
+  {command}window stop ID [--json]{reset}                     End that window's Sessions
   {command}window stop all{reset}                             End every window's Sessions
   {command}windows [--json]{reset}                            List independent windows
 
 {heading}Sessions{reset}
   {command}attach [GENERATION]{reset}                         Reattach to current or named work
   {command}generations [--json]{reset}                        List current and older work
-  {command}stop GENERATION|previous|all [--json]{reset}        End selected Sessions
+  {command}stop GENERATION|previous|all [--json]{reset}       End selected Sessions
 
 {heading}Tabs & panes{reset}
   {command}workspace [--json]{reset}                          Inspect the workspace
   {command}tab create [--json]{reset}                         Choose a directory for a new tab
   {command}tab close TAB [--json]{reset}                      Close the active non-final tab
-  {command}tab directory TAB [--json] -- DIRECTORY{reset}      Set the tab's launch directory
-  {command}tab move left|right [--json]{reset}                 Move the active tab
+  {command}tab directory TAB [--json] -- DIRECTORY{reset}     Set the tab's launch directory
+  {command}tab move left|right [--json]{reset}                Move the active tab
   {command}pane create [--json]{reset}                        Add a pane to the active tab
-  {command}pane move up|down [--json]{reset}                   Move the selected pane
-  {command}focus ID|left|right|up|down [--json]{reset}         Focus by ID or navigate
+  {command}pane move up|down [--json]{reset}                  Move the selected pane
+  {command}focus ID|left|right|up|down [--json]{reset}        Focus by ID or navigate
 
 {heading}Tools & information{reset}
-  {command}anima [STYLE] [CHILD OPTIONS...]{reset}             Play an animation here
+  {command}anima [STYLE] [CHILD OPTIONS...]{reset}            Play an animation here
   {command}versions{reset}                                    Show exact component versions
   {command}config-path{reset}                                 Create and print the config root
   {command}-h, --help{reset}                                  Show this help
 
 {heading}Examples{reset}
-  {command}eon run -- eon-nu -c 'print hello'{reset}            Start with a command
+  {command}eon run -- eon-nu -c 'print hello'{reset}          Start with a command
   {command}eon windows --json{reset}                          Inspect windows as JSON
   {command}eon anima --help{reset}                            Browse animation styles/options
 
