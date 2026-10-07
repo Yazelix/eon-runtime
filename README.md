@@ -14,6 +14,8 @@ Eon's actual executable calls `eon_runtime::run(inputs)`. The concrete root
 exports construct `Inputs`, `ComponentFacts`, defaults and managed-program
 inputs; the nine mechanism modules remain private. `run` returns the product
 label and exit result. Eon retains process exit/error handling.
+The private CLI prints grouped Eon help for standalone `-h` and `--help`,
+with terminal-only color and concise usage errors; child options remain forwarded.
 
 Eon supplies its own product version, chosen defaults, validated component
 report and Orbit revision, opaque executable paths, and immutable assembly
@@ -102,10 +104,10 @@ artifacts.
 
 | Surface | Lines |
 |---|---:|
-| Rust source and tests | 13,495 |
+| Rust source and tests | 13,555 |
 | Cargo manifests | 26 |
 | Agent guidelines | 38 |
-| README | 111 |
+| README | 113 |
 | License and notice | 209 |
 | Repository ignore rules | 1 |
-| **Total** | **13,880** |
+| **Total** | **13,942** |
