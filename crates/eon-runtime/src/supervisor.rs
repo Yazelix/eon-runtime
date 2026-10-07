@@ -383,6 +383,12 @@ fn venus_command(
     }
     for (flag, value) in [
         (
+            "--cursor-trail-duration-v1",
+            terminal
+                .cursor_trail_duration
+                .map(|value| value.to_string()),
+        ),
+        (
             "--font-size",
             terminal.font_size.map(|value| value.to_string()),
         ),
@@ -1599,13 +1605,15 @@ rows = 30
     }
 
     #[test]
-    fn configured_cursor_color_reaches_both_product_launches() {
+    fn configured_cursor_tail_reaches_both_product_launches() {
         let inputs = crate::fixtures::inputs();
         let root = temporary_directory();
         for value in ["random", "preset:ice", "custom:#12ABCF"] {
             fs::write(
                 root.join("config.toml"),
-                format!("[terminal]\ncursor_trail_color = '{value}'\n"),
+                format!(
+                    "[terminal]\ncursor_trail_color = '{value}'\ncursor_trail_duration = 2.5\n"
+                ),
             )
             .unwrap();
             let terminal =
@@ -1627,6 +1635,36 @@ rows = 30
                         .any(|pair| pair == ["--cursor-trail-color", value]),
                     "cursor color did not reach Venus"
                 );
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--cursor-trail-duration-v1", "2.5"])
+                );
+            }
+        }
+
+        for source in ["", "[terminal]\ncursor_trail_duration = 3.0\n"] {
+            fs::write(root.join("config.toml"), source).unwrap();
+            let mut defaults = crate::fixtures::inputs().defaults;
+            defaults.terminal.cursor_trail_duration = Some(2.0);
+            let terminal =
+                crate::managed_environment::terminal_presentation(&root, &defaults).unwrap();
+            for mode in [LaunchMode::Workspace, LaunchMode::Terminal] {
+                let command = venus_command(
+                    &inputs,
+                    &root,
+                    Path::new("/runtime.sock"),
+                    mode,
+                    &terminal,
+                    "eon",
+                    true,
+                );
+                let args = command.get_args().collect::<Vec<_>>();
+                let expected = if source.is_empty() { "2" } else { "3" };
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair == ["--cursor-trail-duration-v1", expected])
+                );
+                assert!(!terminal.requires_startup_admission());
             }
         }
 

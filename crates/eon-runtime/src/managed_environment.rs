@@ -126,6 +126,7 @@ pub struct TerminalConfig {
     pub background_blur: bool,
     pub pane_frames: bool,
     pub cursor_trail_color: Option<String>,
+    pub cursor_trail_duration: Option<f32>,
     pub font_family: Option<String>,
     pub font_fallbacks: Vec<String>,
     pub font_size: Option<f32>,
@@ -141,6 +142,7 @@ struct TerminalSettings {
     background_blur: Option<bool>,
     pane_frames: Option<bool>,
     cursor_trail_color: Option<String>,
+    cursor_trail_duration: Option<f32>,
     font_family: Option<String>,
     font_fallbacks: Option<Vec<String>>,
     font_size: Option<f32>,
@@ -250,6 +252,9 @@ pub(crate) fn terminal_presentation(
         cursor_trail_color: settings
             .cursor_trail_color
             .or_else(|| base.cursor_trail_color.clone()),
+        cursor_trail_duration: settings
+            .cursor_trail_duration
+            .or(base.cursor_trail_duration),
         font_family: settings.font_family.or_else(|| base.font_family.clone()),
         font_fallbacks: settings
             .font_fallbacks
@@ -267,6 +272,12 @@ pub(crate) fn terminal_presentation(
         );
     }
     for (field, value, minimum, maximum) in [
+        (
+            "cursor_trail_duration",
+            terminal.cursor_trail_duration,
+            0.25,
+            4.0,
+        ),
         ("font_size", terminal.font_size, 6.0, 96.0),
         ("line_height", terminal.line_height, 1.0, 3.0),
     ] {
