@@ -469,7 +469,7 @@ fn print_help(inputs: &Inputs) -> Result<i32, String> {
   {command}eon anima --help{reset}                            Browse animation styles/options
 
 Closing a window detaches. Stop ends its Sessions.
-Where shown, {command}--json{reset} prints JSON; Stop skips confirmation.
+Where shown, {command}--json{reset} prints JSON and skips Stop confirmation.
 ",
         version = inputs.version
     ))?;
