@@ -521,6 +521,7 @@ fn acquire_management(
         identity: candidate.identity,
         lease: stream,
         child: None,
+        finished: None,
     })
 }
 
@@ -609,6 +610,30 @@ pub(super) fn recover_sessions(
     component_generation: &str,
     deadline: Instant,
 ) -> Result<(Vec<RunningSession>, bool), String> {
+    let mut sessions =
+        acquire_generation_sessions(runtime, mode, component_generation, &[], deadline)?;
+    let mut recovered_picker = false;
+    for picker in sessions
+        .iter_mut()
+        .filter(|session| session.number.is_none())
+    {
+        recovered_picker = true;
+        stop_managed_sessions(
+            std::slice::from_mut(picker),
+            operation_timeout(deadline, "stale directory-picker cleanup")?,
+        )?;
+    }
+    sessions.retain(|session| session.number.is_some());
+    Ok((sessions, recovered_picker))
+}
+
+pub(super) fn acquire_generation_sessions(
+    runtime: &Path,
+    mode: LaunchMode,
+    component_generation: &str,
+    owned: &[RunningSession],
+    deadline: Instant,
+) -> Result<Vec<RunningSession>, String> {
     let mut paths = fs::read_dir(runtime)
         .map_err(|error| {
             format!(
@@ -644,6 +669,9 @@ pub(super) fn recover_sessions(
     let mut pickers = Vec::new();
     let mut numbers = HashSet::new();
     for record_path in paths {
+        if owned.iter().any(|session| session.record == record_path) {
+            continue;
+        }
         operation_timeout(deadline, "terminal recovery")?;
         let snapshot = read_management_record(&record_path)?
             .ok_or_else(|| format!("terminal record {} disappeared", record_path.display()))?;
@@ -716,20 +744,11 @@ pub(super) fn recover_sessions(
         return Err("EonTerm cannot recover more than one live terminal".into());
     }
 
-    let recovered_picker = !pickers.is_empty();
-    for candidate in pickers {
-        let mut picker = acquire_management(candidate, deadline)?;
-        stop_managed_sessions(
-            std::slice::from_mut(&mut picker),
-            operation_timeout(deadline, "stale directory-picker cleanup")?,
-        )?;
-    }
-
-    let sessions = candidates
+    candidates
         .into_iter()
+        .chain(pickers)
         .map(|candidate| acquire_management(candidate, deadline))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((sessions, recovered_picker))
+        .collect()
 }
 
 pub(super) struct RunningSession {
@@ -740,6 +759,13 @@ pub(super) struct RunningSession {
     identity: LiveIdentity,
     lease: UnixStream,
     child: Option<Child>,
+    finished: Option<(TerminationReason, ProcessOutcome)>,
+}
+
+impl RunningSession {
+    pub(super) fn is_finished(&self) -> bool {
+        self.finished.is_some()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1014,25 +1040,57 @@ fn wait_and_finalize_tombstone(
             operation_timeout(deadline, "terminal process reaping")?;
             thread::sleep(Duration::from_millis(25));
         }
+    } else {
+        let pid = i32::try_from(session.identity.process_id)
+            .ok()
+            .filter(|pid| *pid > 0)
+            .ok_or("invalid ended terminal process identity")?;
+        loop {
+            // A failed Ready rollback can drop our Child handle. Reap only an
+            // exact child after managed cleanup; recovered runs return ECHILD.
+            let mut status = 0;
+            // SAFETY: status is writable; WNOHANG sends no signal and cannot wait on a non-child.
+            let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if result > 0 {
+                break;
+            }
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    break;
+                }
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("cannot reap ended terminal: {error}"));
+            }
+            operation_timeout(deadline, "terminal process reaping")?;
+            thread::sleep(Duration::from_millis(25));
+        }
     }
     cleanup_record(&session.record, record_object)?;
+    session.finished = Some((reason, outcome));
     Ok(outcome)
 }
 
 pub(super) fn session_finished(session: &mut RunningSession) -> Result<Option<i32>, String> {
-    match session.lease.read(&mut [0]) {
-        Ok(0) => {}
-        Ok(_) => return Err("terminal sent an unsolicited management result".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
-        Err(_) => {}
-    }
-    let outcome = wait_and_finalize_tombstone(
-        session,
-        TerminationReason::NaturalExit,
-        None,
-        Instant::now() + SESSION_START_TIMEOUT,
-    )?;
+    let outcome = if let Some((_, outcome)) = session.finished {
+        outcome
+    } else {
+        match session.lease.read(&mut [0]) {
+            Ok(0) => {}
+            Ok(_) => return Err("terminal sent an unsolicited management result".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
+            Err(_) => {}
+        }
+        wait_and_finalize_tombstone(
+            session,
+            TerminationReason::NaturalExit,
+            None,
+            Instant::now() + SESSION_START_TIMEOUT,
+        )?
+    };
     Ok(Some(match outcome {
         ProcessOutcome::ExitCode(code) => code,
         ProcessOutcome::Signal(_) => 1,
@@ -1048,6 +1106,10 @@ pub(super) fn stop_managed_sessions(
         .map_err(|error| format!("cannot encode terminal stop: {error}"))?;
     let mut writes = Vec::with_capacity(sessions.len());
     for session in sessions.iter_mut() {
+        if session.is_finished() {
+            writes.push(Ok(()));
+            continue;
+        }
         let result = (|| {
             let remaining = operation_timeout(deadline, "terminal stop")?;
             session
@@ -1065,6 +1127,9 @@ pub(super) fn stop_managed_sessions(
 
     let mut errors = Vec::new();
     for (session, write) in sessions.iter_mut().zip(writes) {
+        if session.is_finished() {
+            continue;
+        }
         let response = if write.is_ok() {
             match read_management_response(&mut session.lease, deadline, "terminal stop response") {
                 Ok(ManagementServerMessage::Stopped(tombstone))
@@ -1102,11 +1167,28 @@ pub(super) fn stop_managed_sessions(
             ),
         };
         if let Err(error) = result {
+            if matches!(read_management_record(&session.record), Ok(Some(RecordSnapshot {
+                record: ManagementRecord::Tombstone(ref tombstone), ..
+            })) if tombstone.identity == session.identity && tombstone.reason == TerminationReason::NaturalExit)
+            {
+                wait_and_finalize_tombstone(
+                    session,
+                    TerminationReason::NaturalExit,
+                    None,
+                    deadline,
+                )?;
+            }
             errors.push(format!("{}: {error}", session.id));
         }
     }
     if errors.is_empty() {
-        Ok(sessions.iter().map(|session| session.id.clone()).collect())
+        Ok(sessions
+            .iter()
+            .filter(|session| {
+                matches!(session.finished, Some((TerminationReason::ExplicitStop, _)))
+            })
+            .map(|session| session.id.clone())
+            .collect())
     } else {
         for session in sessions {
             if let Err(error) = session

@@ -167,7 +167,8 @@ pub(super) fn send_legacy_inspect(socket: &Path) -> Result<v4::Response, Endpoin
     })
 }
 
-fn prepare_action(action: Action) -> Result<(bool, Vec<u8>), EndpointFailure> {
+fn prepare_action(action: Action) -> Result<(bool, Vec<u8>, Duration), EndpointFailure> {
+    let timeout = result_timeout(&action);
     let lifecycle = matches!(
         action,
         Action::Workspace(
@@ -187,14 +188,23 @@ fn prepare_action(action: Action) -> Result<(bool, Vec<u8>), EndpointFailure> {
             format!("cannot encode Eon action: {error}"),
         )
     })?;
-    Ok((lifecycle, request))
+    Ok((lifecycle, request, timeout))
+}
+
+fn result_timeout(action: &Action) -> Duration {
+    if matches!(action, Action::Workspace(WorkspaceAction::Stop { .. })) {
+        // One in-flight operation may precede the bounded managed Stop.
+        CONTROL_TIMEOUT.saturating_add(SESSION_START_TIMEOUT)
+    } else {
+        CONTROL_TIMEOUT
+    }
 }
 
 fn send_prepared_action(
     stream: UnixStream,
-    (lifecycle, request): (bool, Vec<u8>),
+    (lifecycle, request, timeout): (bool, Vec<u8>, Duration),
 ) -> Result<ControlResponse, EndpointFailure> {
-    let response = exchange(stream, &request)?;
+    let response = exchange(stream, &request, timeout)?;
     if lifecycle {
         decode_lifecycle_response(&response)
             .map(ControlResponse::Lifecycle)
@@ -206,7 +216,14 @@ fn send_prepared_action(
     }
 }
 
-fn exchange(mut stream: UnixStream, request: &[u8]) -> Result<Vec<u8>, EndpointFailure> {
+fn exchange(
+    mut stream: UnixStream,
+    request: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, EndpointFailure> {
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| io_endpoint_failure(error, "cannot bound Eon action result"))?;
     stream
         .write_all(request)
         .map_err(|error| io_endpoint_failure(error, "cannot send Eon action"))?;
@@ -328,6 +345,7 @@ pub(super) fn send_generation_action_on(
     if version == VERSION {
         return send_action_on(stream, Action::Workspace(action));
     }
+    let timeout = result_timeout(&Action::Workspace(action.clone()));
     let id = request_id();
     let request = match version {
         2 => v2::encode_request(&v2::Request {
@@ -366,7 +384,7 @@ pub(super) fn send_generation_action_on(
             format!("cannot encode Eon generation action: {error}"),
         )
     })?;
-    let response = exchange(stream, &request)?;
+    let response = exchange(stream, &request, timeout)?;
     let decoded = match version {
         2 => v2::decode_lifecycle_response(&response),
         3 => v3::decode_lifecycle_response(&response),

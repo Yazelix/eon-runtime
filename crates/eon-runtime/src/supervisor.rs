@@ -9,7 +9,8 @@ use super::{
     generation::{current_generation, generation_directory},
     managed_environment::{self, nonempty_environment_path},
     sessions::{
-        RunningSession, recover_sessions, session_finished, start_orbit, stop_managed_sessions,
+        RunningSession, acquire_generation_sessions, recover_sessions, session_finished,
+        start_orbit, stop_managed_sessions,
     },
     workspace::{self, LaunchCommand, SessionOperation, Workspace},
 };
@@ -773,6 +774,7 @@ fn supervise(
         venus: None,
         initial_child,
         initial_status: None,
+        stopping: false,
         codex_quota: (mode == LaunchMode::Workspace).then(codex_quota::Provider::start),
     };
     let presentation = match admitted {
@@ -810,13 +812,15 @@ fn supervise(
 
     let status = (|| {
         loop {
-            reap_finished_sessions(&mut state, inputs, config)?;
+            if !state.stopping {
+                reap_finished_sessions(&mut state, inputs, config)?;
+            }
 
             if state.sessions.is_empty() {
                 return Ok(state.initial_status.unwrap_or(0));
             }
 
-            if reap_presentation(&mut state, inputs, config)? {
+            if !state.stopping && reap_presentation(&mut state, inputs, config)? {
                 match mode {
                     LaunchMode::Workspace => eprintln!(
                         "Eon Desktop exited; terminals remain active. Run `eon attach {generation}` to reconnect."
@@ -859,6 +863,7 @@ struct SupervisorState {
     venus: Option<PresentationProcess>,
     initial_child: Vec<OsString>,
     initial_status: Option<i32>,
+    stopping: bool,
     codex_quota: Option<codex_quota::Provider>,
 }
 
@@ -1218,6 +1223,30 @@ fn dispatch_control_request(
     } else {
         LaunchMode::Terminal
     };
+    if state.stopping
+        && !matches!(
+            request.action,
+            Action::Workspace(
+                WorkspaceAction::InspectRuntime
+                    | WorkspaceAction::InspectPresentation
+                    | WorkspaceAction::Stop { .. }
+            )
+        )
+    {
+        let error = failure(
+            "stop-incomplete",
+            "generation cleanup is incomplete; retry Stop",
+        );
+        return (
+            match request.action {
+                Action::Workspace(WorkspaceAction::Present { .. }) => {
+                    ControlResponse::Lifecycle(LifecycleResponse::Failure(error))
+                }
+                _ => ControlResponse::Workspace(Response::Failure(error)),
+            },
+            false,
+        );
+    }
     match request {
         Request {
             action:
@@ -1226,10 +1255,18 @@ fn dispatch_control_request(
                 ),
             ..
         } => match runtime_status(inputs, generation, &state.sessions, mode) {
-            Ok(runtime) => (
-                ControlResponse::Lifecycle(LifecycleResponse::Runtime(runtime)),
-                false,
-            ),
+            Ok(mut runtime) => {
+                if state.stopping {
+                    runtime.attach = Availability {
+                        available: false,
+                        reason: "generation cleanup is incomplete; retry Stop".into(),
+                    };
+                }
+                (
+                    ControlResponse::Lifecycle(LifecycleResponse::Runtime(runtime)),
+                    false,
+                )
+            }
             Err(detail) => (
                 ControlResponse::Lifecycle(LifecycleResponse::Failure(failure(
                     "unrepresentable-state",
@@ -1332,7 +1369,24 @@ fn dispatch_control_request(
                     false,
                 );
             }
-            let response = match stop_managed_sessions(&mut state.sessions, SESSION_START_TIMEOUT) {
+            state.stopping = true;
+            let deadline = Instant::now() + SESSION_START_TIMEOUT;
+            let result = acquire_generation_sessions(
+                runtime,
+                mode,
+                &state.component_generation,
+                &state.sessions,
+                deadline,
+            )
+            .and_then(|untracked| {
+                state.sessions.extend(untracked);
+                stop_managed_sessions(
+                    &mut state.sessions,
+                    deadline.saturating_duration_since(Instant::now()),
+                )
+            });
+            let shutdown = result.is_ok();
+            let response = match result {
                 Ok(mut sessions) => {
                     sessions.retain(|session| !workspace::is_directory_picker_session(session));
                     state.sessions.clear();
@@ -1343,7 +1397,7 @@ fn dispatch_control_request(
                 }
                 Err(detail) => LifecycleResponse::Failure(failure("stop-failed", detail)),
             };
-            (ControlResponse::Lifecycle(response), true)
+            (ControlResponse::Lifecycle(response), shutdown)
         }
         Request {
             id,
@@ -1427,7 +1481,9 @@ fn runtime_status(
         component_report: inputs.components()?.report.clone(),
         sessions: sessions
             .iter()
-            .filter(|session| !workspace::is_directory_picker_session(&session.id))
+            .filter(|session| {
+                !session.is_finished() && !workspace::is_directory_picker_session(&session.id)
+            })
             .map(|session| session.id.clone())
             .collect(),
         attach: Availability {
