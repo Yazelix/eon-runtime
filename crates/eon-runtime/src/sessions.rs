@@ -1105,11 +1105,7 @@ pub(super) fn stop_managed_sessions(
     let request = management::encode_client_message(&ManagementClientMessage::Stop)
         .map_err(|error| format!("cannot encode terminal stop: {error}"))?;
     let mut writes = Vec::with_capacity(sessions.len());
-    for session in sessions.iter_mut() {
-        if session.is_finished() {
-            writes.push(Ok(()));
-            continue;
-        }
+    for session in sessions.iter_mut().filter(|session| !session.is_finished()) {
         let result = (|| {
             let remaining = operation_timeout(deadline, "terminal stop")?;
             session
@@ -1126,10 +1122,11 @@ pub(super) fn stop_managed_sessions(
     }
 
     let mut errors = Vec::new();
-    for (session, write) in sessions.iter_mut().zip(writes) {
-        if session.is_finished() {
-            continue;
-        }
+    for (session, write) in sessions
+        .iter_mut()
+        .filter(|session| !session.is_finished())
+        .zip(writes)
+    {
         let response = if write.is_ok() {
             match read_management_response(&mut session.lease, deadline, "terminal stop response") {
                 Ok(ManagementServerMessage::Stopped(tombstone))
@@ -1170,13 +1167,17 @@ pub(super) fn stop_managed_sessions(
             if matches!(read_management_record(&session.record), Ok(Some(RecordSnapshot {
                 record: ManagementRecord::Tombstone(ref tombstone), ..
             })) if tombstone.identity == session.identity && tombstone.reason == TerminationReason::NaturalExit)
-            {
-                wait_and_finalize_tombstone(
+                && let Err(cleanup) = wait_and_finalize_tombstone(
                     session,
                     TerminationReason::NaturalExit,
                     None,
                     deadline,
-                )?;
+                )
+            {
+                errors.push(format!(
+                    "{}: cannot reconcile natural exit: {cleanup}",
+                    session.id
+                ));
             }
             errors.push(format!("{}: {error}", session.id));
         }
@@ -1210,8 +1211,10 @@ pub(super) fn stop_managed_sessions(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_directory_picker_endpoint, managed_session_number, management, orbit_command,
-        read_management_response, session_number, unix_connect_with_timeout,
+        EndpointIdentity, LiveIdentity, ManagementRecord, ObjectIdentity, ProcessOutcome,
+        RunningSession, TerminationReason, Tombstone, is_directory_picker_endpoint,
+        managed_session_number, management, orbit_command, read_management_response,
+        session_number, stop_managed_sessions, unix_connect_with_timeout,
     };
     use crate::supervisor::temporary_directory;
     use orbit_protocol::management::ServerMessage as ManagementServerMessage;
@@ -1219,12 +1222,118 @@ mod tests {
         ffi::{OsStr, OsString},
         fs,
         io::Write,
-        os::unix::net::{UnixListener, UnixStream},
+        os::{
+            fd::AsRawFd,
+            unix::{
+                ffi::OsStrExt,
+                fs::OpenOptionsExt,
+                net::{UnixListener, UnixStream},
+            },
+        },
         path::{Path, PathBuf},
         process::Command,
         thread,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn failed_natural_cleanup_still_finalizes_other_runs_and_restores_leases() {
+        let root = temporary_directory();
+        let mut peers = Vec::new();
+        let mut sessions = Vec::new();
+        for (index, reason) in [
+            TerminationReason::NaturalExit,
+            TerminationReason::ExplicitStop,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let number = index + 1;
+            let endpoint = root.join(format!("session-{number}.sock"));
+            let identity = LiveIdentity {
+                session_id: format!("session-{number}"),
+                run_id: format!("run-{number}"),
+                component_generation: "component-1".into(),
+                record_generation: management::RECORD_GENERATION,
+                management_generation: management::VERSION,
+                process_id: std::process::id(),
+                process_start: 1,
+                uid: super::effective_uid(),
+                presentation: EndpointIdentity {
+                    path: endpoint.as_os_str().as_bytes().to_vec(),
+                    object: ObjectIdentity {
+                        device: 1,
+                        inode: 1,
+                    },
+                },
+                management: EndpointIdentity {
+                    path: root
+                        .join(format!("management-{number}"))
+                        .as_os_str()
+                        .as_bytes()
+                        .to_vec(),
+                    object: ObjectIdentity {
+                        device: 1,
+                        inode: 2,
+                    },
+                },
+            };
+            let tombstone = Tombstone {
+                identity: identity.clone(),
+                reason,
+                outcome: ProcessOutcome::ExitCode(0),
+            };
+            let record = root.join(format!("session-{number}.record"));
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&record)
+                .unwrap()
+                .write_all(
+                    &management::encode_record(&ManagementRecord::Tombstone(tombstone.clone()))
+                        .unwrap(),
+                )
+                .unwrap();
+            let (lease, mut peer) = UnixStream::pair().unwrap();
+            peer.write_all(
+                &management::encode_server_message(&ManagementServerMessage::Stopped(tombstone))
+                    .unwrap(),
+            )
+            .unwrap();
+            peers.push(peer);
+            sessions.push(RunningSession {
+                number: Some(number),
+                id: identity.session_id.clone(),
+                endpoint,
+                record,
+                identity,
+                lease,
+                child: None,
+                finished: None,
+            });
+        }
+        fs::write(&sessions[0].endpoint, "replacement").unwrap();
+        let error = stop_managed_sessions(&mut sessions, Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("replaced during cleanup"), "{error}");
+        assert!(
+            sessions[1].is_finished(),
+            "one failure skipped a completed run"
+        );
+        assert!(!sessions[1].record.exists());
+        assert_eq!(
+            fs::read_to_string(&sessions[0].endpoint).unwrap(),
+            "replacement"
+        );
+        for session in &sessions {
+            assert_eq!(session.lease.read_timeout().unwrap(), None);
+            assert_eq!(session.lease.write_timeout().unwrap(), None);
+            // SAFETY: F_GETFL only reads flags from this test-owned descriptor.
+            let flags = unsafe { libc::fcntl(session.lease.as_raw_fd(), libc::F_GETFL) };
+            assert_ne!(flags & libc::O_NONBLOCK, 0);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn session_identity_is_positive_canonical_decimal() {
