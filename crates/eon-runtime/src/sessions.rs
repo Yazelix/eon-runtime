@@ -701,6 +701,8 @@ pub(super) fn acquire_generation_sessions(
                     operation_timeout(deadline, "ended terminal cleanup")?;
                     thread::sleep(Duration::from_millis(25));
                 }
+                recorded_process_is_dead(&tombstone.identity)?;
+                reap_untracked_child(tombstone.identity.process_id, deadline)?;
                 cleanup_record(&record_path, snapshot.object)?;
                 continue;
             }
@@ -719,6 +721,7 @@ pub(super) fn acquire_generation_sessions(
                 Path::new(OsStr::from_bytes(&identity.management.path)),
                 &identity.management,
             )?;
+            reap_untracked_child(identity.process_id, deadline)?;
             cleanup_record(&record_path, snapshot.object)?;
             continue;
         }
@@ -989,6 +992,35 @@ fn endpoint_removed(path: &Path, expected: ObjectIdentity) -> Result<bool, Strin
     }
 }
 
+fn reap_untracked_child(process_id: u32, deadline: Instant) -> Result<(), String> {
+    let pid = i32::try_from(process_id)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or("invalid ended terminal process identity")?;
+    loop {
+        // A failed Ready rollback can drop our Child handle. Reap only an
+        // exact child after managed cleanup; recovered runs return ECHILD.
+        let mut status = 0;
+        // SAFETY: status is writable; WNOHANG sends no signal and cannot wait on a non-child.
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if result > 0 {
+            return Ok(());
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(());
+            }
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("cannot reap ended terminal: {error}"));
+        }
+        operation_timeout(deadline, "terminal process reaping")?;
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn wait_and_finalize_tombstone(
     session: &mut RunningSession,
     reason: TerminationReason,
@@ -1041,32 +1073,7 @@ fn wait_and_finalize_tombstone(
             thread::sleep(Duration::from_millis(25));
         }
     } else {
-        let pid = i32::try_from(session.identity.process_id)
-            .ok()
-            .filter(|pid| *pid > 0)
-            .ok_or("invalid ended terminal process identity")?;
-        loop {
-            // A failed Ready rollback can drop our Child handle. Reap only an
-            // exact child after managed cleanup; recovered runs return ECHILD.
-            let mut status = 0;
-            // SAFETY: status is writable; WNOHANG sends no signal and cannot wait on a non-child.
-            let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            if result > 0 {
-                break;
-            }
-            if result < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ECHILD) {
-                    break;
-                }
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(format!("cannot reap ended terminal: {error}"));
-            }
-            operation_timeout(deadline, "terminal process reaping")?;
-            thread::sleep(Duration::from_millis(25));
-        }
+        reap_untracked_child(session.identity.process_id, deadline)?;
     }
     cleanup_record(&session.record, record_object)?;
     session.finished = Some((reason, outcome));
@@ -1235,6 +1242,124 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn discovery_reaps_untracked_ended_children_before_removing_records() {
+        let root = temporary_directory();
+        for reason in [
+            Some(TerminationReason::NaturalExit),
+            Some(TerminationReason::ExplicitStop),
+            None,
+        ] {
+            let mut child = Command::new("true").spawn().unwrap();
+            let pid = child.id();
+            let process_path = PathBuf::from(format!("/proc/{pid}"));
+            let start = fs::read_to_string(process_path.join("stat"))
+                .unwrap()
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .nth(19)
+                .unwrap()
+                .parse()
+                .unwrap();
+            let endpoint = root.join("k1.sock");
+            let record = root.join("k1.sock.record");
+            let identity = LiveIdentity {
+                session_id: "directory-picker-1".into(),
+                run_id: format!("run-{pid}"),
+                component_generation: "component-1".into(),
+                record_generation: management::RECORD_GENERATION,
+                management_generation: management::VERSION,
+                process_id: pid,
+                process_start: start,
+                uid: super::effective_uid(),
+                presentation: EndpointIdentity {
+                    path: endpoint.as_os_str().as_bytes().to_vec(),
+                    object: ObjectIdentity {
+                        device: 1,
+                        inode: 1,
+                    },
+                },
+                management: EndpointIdentity {
+                    path: root
+                        .join("k1.sock.management")
+                        .as_os_str()
+                        .as_bytes()
+                        .to_vec(),
+                    object: ObjectIdentity {
+                        device: 1,
+                        inode: 2,
+                    },
+                },
+            };
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !super::recorded_process_is_dead(&identity).unwrap() {
+                assert!(Instant::now() < deadline, "test child did not exit");
+                thread::sleep(Duration::from_millis(5));
+            }
+            let value = reason.map_or_else(
+                || ManagementRecord::Live(identity.clone()),
+                |reason| {
+                    ManagementRecord::Tombstone(Tombstone {
+                        identity: identity.clone(),
+                        reason,
+                        outcome: ProcessOutcome::ExitCode(0),
+                    })
+                },
+            );
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&record)
+                .unwrap()
+                .write_all(&management::encode_record(&value).unwrap())
+                .unwrap();
+            if let ManagementRecord::Tombstone(mut wrong) = value.clone() {
+                wrong.identity.process_start += 1;
+                fs::write(
+                    &record,
+                    management::encode_record(&ManagementRecord::Tombstone(wrong)).unwrap(),
+                )
+                .unwrap();
+                let error = super::acquire_generation_sessions(
+                    &root,
+                    super::LaunchMode::Workspace,
+                    "component-1",
+                    &[],
+                    deadline,
+                )
+                .err()
+                .expect("wrong process start was accepted");
+                assert!(error.contains("process start differs"), "{error}");
+                assert!(
+                    process_path.exists(),
+                    "wrong identity authorized child reaping"
+                );
+                assert!(record.exists(), "wrong identity retired its record");
+                fs::write(&record, management::encode_record(&value).unwrap()).unwrap();
+            }
+            let sessions = super::acquire_generation_sessions(
+                &root,
+                super::LaunchMode::Workspace,
+                "component-1",
+                &[],
+                deadline,
+            )
+            .unwrap();
+            let reaped = !process_path.exists();
+            let _ = child.wait();
+            assert!(sessions.is_empty());
+            assert!(!record.exists());
+            assert!(
+                reaped,
+                "discovery removed {reason:?} record without reaping its child"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn failed_natural_cleanup_still_finalizes_other_runs_and_restores_leases() {
