@@ -581,7 +581,7 @@ pub(crate) fn prepare_popup_command(
         PopupCommand::Argv(argv) => {
             if !popup_executable(&argv[0], session_bin, directory)? {
                 return Err(format!(
-                    "popup executable {:?} is unavailable on Eon's Session PATH",
+                    "popup executable {:?} is unavailable on Eon's terminal PATH",
                     argv[0]
                 ));
             }
@@ -595,7 +595,7 @@ pub(crate) fn prepare_popup_command(
                     return Ok(argv);
                 }
             }
-            Err("no supported Agent executable is available on Eon's Session PATH; install codex, grok, opencode, pi, or claude, or configure popups.agent.command".into())
+            Err("no supported Agent executable is available on Eon's terminal PATH; install codex, grok, opencode, pi, or claude, or configure popups.agent.command".into())
         }
     }
 }
@@ -634,7 +634,7 @@ fn popup_executable(
 }
 
 pub(crate) fn session_path(prefix: &Path) -> Result<OsString, String> {
-    prepend_path(prefix, env::var_os("PATH").as_deref(), "Eon Session")
+    prepend_path(prefix, env::var_os("PATH").as_deref(), "Eon terminal")
 }
 
 pub(crate) fn command(
@@ -1268,7 +1268,7 @@ keep_alive = false
                 &inputs.defaults
             )
             .unwrap_err()
-            .contains("cannot construct Eon Session PATH")
+            .contains("cannot construct Eon terminal PATH")
         );
         let mut defaults = crate::fixtures::inputs().defaults;
         defaults.agent_commands = &[

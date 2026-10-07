@@ -608,7 +608,7 @@ fn recovered_workspace_sessions(
             Ok((
                 session
                     .number
-                    .ok_or("recovered a transient Session as a durable pane")?,
+                    .ok_or("recovered a transient terminal as a durable pane")?,
                 workspace::Session {
                     id: session.id.clone(),
                     endpoint: session.endpoint.clone(),
@@ -802,7 +802,7 @@ fn supervise(
             }
             let mut errors = vec![error];
             if let Err(cleanup) = session_cleanup {
-                errors.push(format!("cannot roll back Sessions: {cleanup}"));
+                errors.push(format!("cannot roll back terminals: {cleanup}"));
             }
             return Err(errors.join("; "));
         }
@@ -819,10 +819,10 @@ fn supervise(
             if reap_presentation(&mut state, inputs, config)? {
                 match mode {
                     LaunchMode::Workspace => eprintln!(
-                        "Eon Desktop exited; Sessions remains active. Run `eon attach {generation}` to reconnect."
+                        "Eon Desktop exited; terminals remain active. Run `eon attach {generation}` to reconnect."
                     ),
                     LaunchMode::Terminal => eprintln!(
-                        "Eon Desktop exited; Session remains active. Run `eonterm attach {generation}` to reconnect."
+                        "Eon Desktop exited; terminal remains active. Run `eonterm attach {generation}` to reconnect."
                     ),
                 }
             }
@@ -922,7 +922,7 @@ fn stop_workspace_session(session: &mut RunningSession) -> Result<Option<i32>, S
             Ok(Some(status)) => Ok(Some(status)),
             Ok(None) => Err(stop_error),
             Err(reconcile_error) => Err(format!(
-                "{stop_error}; cannot reconcile Session after failed stop: {reconcile_error}"
+                "{stop_error}; cannot reconcile terminal after failed stop: {reconcile_error}"
             )),
         },
     }
@@ -951,7 +951,7 @@ fn close_workspace_tab(
             .as_mut()
             .expect("workspace close retains its owner")
             .session_exited(&id, |_| {
-                Err("closing a tab cannot start a replacement Session".into())
+                Err("closing a tab cannot start a replacement terminal".into())
             })?;
         if id == "session-1" && natural_status.is_some() {
             state.initial_status = natural_status;
@@ -1047,7 +1047,7 @@ fn stop_owned_session(sessions: &mut Vec<RunningSession>, id: &str) -> Result<Op
     let index = sessions
         .iter()
         .position(|session| session.id == id)
-        .ok_or_else(|| format!("Session {id} is missing from the supervisor"))?;
+        .ok_or_else(|| format!("terminal {id} is missing from the supervisor"))?;
     let status = stop_workspace_session(&mut sessions[index])?;
     sessions.remove(index);
     Ok(status)
@@ -1267,7 +1267,7 @@ fn dispatch_control_request(
                 return (
                     ControlResponse::Lifecycle(LifecycleResponse::Failure(failure(
                         "generation-ending",
-                        "the last Session exited while Eon Desktop was reopening",
+                        "the last terminal exited while Eon Desktop was reopening",
                     ))),
                     true,
                 );
@@ -1282,7 +1282,7 @@ fn dispatch_control_request(
                     state
                         .sessions
                         .first()
-                        .ok_or("EonTerm has no live Session")?
+                        .ok_or("EonTerm has no live terminal")?
                         .endpoint
                         .clone()
                 };
@@ -1418,7 +1418,7 @@ fn runtime_status(
     mode: LaunchMode,
 ) -> Result<Runtime, String> {
     if mode == LaunchMode::Terminal && sessions.is_empty() {
-        return Err("supervisor has no live Sessions".into());
+        return Err("supervisor has no live terminals".into());
     }
     Ok(Runtime {
         generation: generation.into(),
@@ -1434,13 +1434,13 @@ fn runtime_status(
             available: true,
             reason: match mode {
                 LaunchMode::Workspace => "supervisor accepts EONW v7 presentation requests",
-                LaunchMode::Terminal => "supervisor owns one EonTerm Session",
+                LaunchMode::Terminal => "supervisor owns one EonTerm terminal",
             }
             .into(),
         },
         stop: Availability {
             available: true,
-            reason: "generation-aware supervisor owns these Sessions".into(),
+            reason: "generation-aware supervisor owns these terminals".into(),
         },
     })
 }

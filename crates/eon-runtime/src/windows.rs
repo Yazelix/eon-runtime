@@ -105,7 +105,7 @@ pub(super) fn new_window(inputs: &Inputs) -> Result<i32, String> {
             >= 108
         {
             return Err(format!(
-                "Eon runtime root {} is too long for independent Session sockets",
+                "Eon runtime root {} is too long for independent terminal sockets",
                 base.display()
             ));
         }

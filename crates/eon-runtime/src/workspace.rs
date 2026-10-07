@@ -140,7 +140,7 @@ impl Workspace {
             .ok_or("cannot recover an empty workspace")?
             .0
             .checked_add(1)
-            .ok_or("recovered Session identity leaves no next Session identity")?;
+            .ok_or("recovered terminal identity leaves no next terminal identity")?;
         let panes = sessions
             .into_iter()
             .map(|(number, session)| Pane {
@@ -451,13 +451,13 @@ impl Workspace {
         if !replacing && self.session_count() >= MAX_SESSIONS {
             return Err(action_error(
                 "capacity",
-                format!("workspace is limited to {MAX_SESSIONS} Sessions"),
+                format!("workspace is limited to {MAX_SESSIONS} terminals"),
             ));
         }
         if self.next_popup == usize::MAX || self.next_session == usize::MAX {
             return Err(action_error(
                 "capacity",
-                "workspace exhausted Session identities",
+                "workspace exhausted terminal identities",
             ));
         }
         let project = matches!(definition.command, PopupCommand::Project);
@@ -611,7 +611,7 @@ impl Workspace {
             .ok_or_else(|| {
                 action_error(
                     "unknown-session",
-                    format!("session {session_id} is not in the workspace"),
+                    format!("terminal {session_id} is not in the workspace"),
                 )
             })?;
         let tab = &mut self.tabs[tab_index];
@@ -693,7 +693,7 @@ impl Workspace {
     ) -> Result<(), String> {
         self.check_session_capacity()?;
         if self.next_pane == usize::MAX || self.next_session == usize::MAX {
-            return Err("workspace exhausted pane or Session identities".into());
+            return Err("workspace exhausted pane or terminal identities".into());
         }
         let pane = Pane {
             id: format!("p{}", self.next_pane),
@@ -927,7 +927,7 @@ impl Workspace {
 
     fn check_session_capacity(&self) -> Result<(), String> {
         if self.session_count() >= MAX_SESSIONS {
-            Err(format!("workspace is limited to {MAX_SESSIONS} Sessions"))
+            Err(format!("workspace is limited to {MAX_SESSIONS} terminals"))
         } else {
             Ok(())
         }
@@ -973,7 +973,7 @@ pub(crate) fn human(snapshot: &Snapshot) -> String {
         ));
         for pane in &tab.panes {
             output.push_str(&format!(
-                "  pane {} session={} live={} endpoint={}\n",
+                "  pane {} terminal={} live={} endpoint={}\n",
                 pane.id,
                 pane.session,
                 pane.live,
@@ -986,7 +986,7 @@ pub(crate) fn human(snapshot: &Snapshot) -> String {
                 .iter()
                 .find(|entry| entry.id == popup.entry);
             output.push_str(&format!(
-                "  popup {} entry={} label={} key={} session={} chosen={} endpoint={}\n",
+                "  popup {} entry={} label={} key={} terminal={} chosen={} endpoint={}\n",
                 popup.id,
                 popup.entry,
                 entry.map_or("?", |entry| entry.label.as_str()),

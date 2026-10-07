@@ -448,7 +448,7 @@ fn generations_human(records: &[GenerationRecord]) -> String {
     let mut output = String::new();
     for record in records {
         output.push_str(&format!(
-            "{} {} {} sessions={}\n",
+            "{} {} {} terminals={}\n",
             record.kind,
             record.id.escape_debug(),
             record.state,
@@ -469,7 +469,7 @@ fn generations_human(records: &[GenerationRecord]) -> String {
             ));
         }
         for session in &record.sessions {
-            output.push_str(&format!("  session {session}\n"));
+            output.push_str(&format!("  terminal {session}\n"));
         }
         if let Some(report) = &record.component_report {
             for line in report.lines() {
@@ -588,7 +588,7 @@ pub(super) fn stop_generation(
     };
     if !json {
         eprint!(
-            "Stop generation {target} and {} live Session{} [{}]? [y/N] ",
+            "Stop generation {target} and {} live terminal{} [{}]? [y/N] ",
             record.sessions.len(),
             if record.sessions.len() == 1 { "" } else { "s" },
             record.sessions.join(", ")

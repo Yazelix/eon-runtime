@@ -5,7 +5,7 @@ The repository builds independently of Eon's product checkout.
 
 | Package | Owns | Version |
 |---|---|---|
-| `eon-runtime` | Invocation, Session lifecycle, workspace state, configuration parsing and generation identity | `0.1.0` |
+| `eon-runtime` | Invocation, terminal lifecycle, workspace state, configuration parsing and generation identity | `0.1.0` |
 | `eon-workspace-protocol` | EONW v2–v7 types and bounded codecs | `0.1.0` |
 
 ## Consumer boundary
@@ -25,7 +25,7 @@ validator, product defaults, assets or Nix expressions.
 Runtime combines its own immutable runtime/EONW bytes with the supplied assembly
 contribution to compute one `g1-` generation. Mutable configuration, live state
 and store/profile paths do not become generation identity. Orbit remains the
-Session/terminal owner; Venus remains the native presentation owner.
+terminal owner; Venus remains the native presentation owner.
 
 The accepted concrete assembly is illustrated by Eon's
 [product inputs](https://github.com/Yazelix/eon/blob/e431d7583c84ff574054d2edf556e9827114987e/crates/eon/src/product.rs).

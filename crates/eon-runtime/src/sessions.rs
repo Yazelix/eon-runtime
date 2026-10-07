@@ -44,7 +44,7 @@ fn managed_session_number(value: &str) -> Result<Option<usize>, String> {
     } else {
         session_number(value)
             .map(Some)
-            .ok_or_else(|| format!("invalid Sessions identity {value:?}"))
+            .ok_or_else(|| format!("invalid terminal identity {value:?}"))
     }
 }
 
@@ -63,7 +63,7 @@ impl ReadyClaim {
     fn create(path: &Path) -> Result<Self, String> {
         let parent = path
             .parent()
-            .ok_or_else(|| format!("Sessions record {} has no parent", path.display()))?;
+            .ok_or_else(|| format!("terminal record {} has no parent", path.display()))?;
         validate_private_directory(parent)?;
         let file = fs::OpenOptions::new()
             .read(true)
@@ -74,13 +74,13 @@ impl ReadyClaim {
             .open(path)
             .map_err(|error| {
                 format!(
-                    "cannot create Sessions Ready claim {}: {error}",
+                    "cannot create terminal Ready claim {}: {error}",
                     path.display()
                 )
             })?;
         let metadata = file.metadata().map_err(|error| {
             format!(
-                "cannot inspect Sessions Ready claim {}: {error}",
+                "cannot inspect terminal Ready claim {}: {error}",
                 path.display()
             )
         })?;
@@ -94,13 +94,13 @@ impl ReadyClaim {
             .set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|error| {
                 format!(
-                    "cannot protect Sessions Ready claim {}: {error}",
+                    "cannot protect terminal Ready claim {}: {error}",
                     path.display()
                 )
             })?;
         if !claim.exact_path_is_empty()? {
             return Err(format!(
-                "Sessions Ready claim {} changed while it was created",
+                "terminal Ready claim {} changed while it was created",
                 path.display()
             ));
         }
@@ -113,7 +113,7 @@ impl ReadyClaim {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => {
                 return Err(format!(
-                    "cannot revalidate Sessions Ready claim {}: {error}",
+                    "cannot revalidate terminal Ready claim {}: {error}",
                     self.path.display()
                 ));
             }
@@ -127,7 +127,7 @@ impl ReadyClaim {
     fn exact_path_is_empty(&self) -> Result<bool, String> {
         let metadata = self.file.metadata().map_err(|error| {
             format!(
-                "cannot inspect Sessions Ready claim {}: {error}",
+                "cannot inspect terminal Ready claim {}: {error}",
                 self.path.display()
             )
         })?;
@@ -137,7 +137,7 @@ impl ReadyClaim {
             || object_identity(&metadata) != self.object
         {
             return Err(format!(
-                "Sessions Ready claim {} changed while retained",
+                "terminal Ready claim {} changed while retained",
                 self.path.display()
             ));
         }
@@ -153,13 +153,13 @@ impl ReadyClaim {
                 }
                 Err(fs::TryLockError::WouldBlock) => {
                     return Err(format!(
-                        "Sessions Ready claim {} remained busy",
+                        "terminal Ready claim {} remained busy",
                         self.path.display()
                     ));
                 }
                 Err(fs::TryLockError::Error(error)) => {
                     return Err(format!(
-                        "cannot lock Sessions Ready claim {}: {error}",
+                        "cannot lock terminal Ready claim {}: {error}",
                         self.path.display()
                     ));
                 }
@@ -170,13 +170,13 @@ impl ReadyClaim {
     fn remove_empty(&self) -> Result<(), String> {
         if !self.exact_path_is_empty()? {
             return Err(format!(
-                "Sessions Ready claim {} changed before cleanup",
+                "terminal Ready claim {} changed before cleanup",
                 self.path.display()
             ));
         }
         fs::remove_file(&self.path).map_err(|error| {
             format!(
-                "cannot remove Sessions Ready claim {}: {error}",
+                "cannot remove terminal Ready claim {}: {error}",
                 self.path.display()
             )
         })
@@ -228,21 +228,21 @@ fn read_management_record(path: &Path) -> Result<Option<RecordSnapshot>, String>
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(format!(
-                "cannot open Sessions record {}: {error}",
+                "cannot open terminal record {}: {error}",
                 path.display()
             ));
         }
     };
     let metadata = file
         .metadata()
-        .map_err(|error| format!("cannot inspect Sessions record {}: {error}", path.display()))?;
+        .map_err(|error| format!("cannot inspect terminal record {}: {error}", path.display()))?;
     if !metadata.file_type().is_file()
         || metadata.uid() != effective_uid()
         || metadata.mode() & 0o7777 != 0o600
         || metadata.len() > management::MAX_RECORD_BYTES as u64
     {
         return Err(format!(
-            "Sessions record {} must be an owned mode-0600 regular file no larger than {} bytes",
+            "terminal record {} must be an owned mode-0600 regular file no larger than {} bytes",
             path.display(),
             management::MAX_RECORD_BYTES
         ));
@@ -252,17 +252,17 @@ fn read_management_record(path: &Path) -> Result<Option<RecordSnapshot>, String>
     Read::by_ref(&mut file)
         .take(management::MAX_RECORD_BYTES.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read Sessions record {}: {error}", path.display()))?;
+        .map_err(|error| format!("cannot read terminal record {}: {error}", path.display()))?;
     if bytes.len() > management::MAX_RECORD_BYTES {
         return Err(format!(
-            "Sessions record {} exceeds {} bytes",
+            "terminal record {} exceeds {} bytes",
             path.display(),
             management::MAX_RECORD_BYTES
         ));
     }
     let current = fs::symlink_metadata(path).map_err(|error| {
         format!(
-            "cannot revalidate Sessions record {}: {error}",
+            "cannot revalidate terminal record {}: {error}",
             path.display()
         )
     })?;
@@ -272,26 +272,26 @@ fn read_management_record(path: &Path) -> Result<Option<RecordSnapshot>, String>
         || object_identity(&current) != object
     {
         return Err(format!(
-            "Sessions record {} changed while it was being read",
+            "terminal record {} changed while it was being read",
             path.display()
         ));
     }
     let record = management::decode_record(&bytes)
-        .map_err(|error| format!("invalid Sessions record {}: {error}", path.display()))?;
+        .map_err(|error| format!("invalid terminal record {}: {error}", path.display()))?;
     Ok(Some(RecordSnapshot { object, record }))
 }
 
 fn endpoint_matches(path: &Path, expected: &EndpointIdentity) -> Result<(), String> {
     if expected.path != path.as_os_str().as_bytes() {
         return Err(format!(
-            "Sessions identity names endpoint {}, expected {}",
+            "terminal identity names endpoint {}, expected {}",
             Path::new(OsStr::from_bytes(&expected.path)).display(),
             path.display()
         ));
     }
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         format!(
-            "cannot inspect Sessions endpoint {}: {error}",
+            "cannot inspect terminal endpoint {}: {error}",
             path.display()
         )
     })?;
@@ -301,7 +301,7 @@ fn endpoint_matches(path: &Path, expected: &EndpointIdentity) -> Result<(), Stri
         || object_identity(&metadata) != expected.object
     {
         return Err(format!(
-            "Sessions endpoint {} does not match its owned mode-0600 socket identity",
+            "terminal endpoint {} does not match its owned mode-0600 socket identity",
             path.display()
         ));
     }
@@ -316,22 +316,22 @@ fn validate_management_identity(
 ) -> Result<(Option<usize>, PathBuf), String> {
     let number = managed_session_number(&identity.session_id)?;
     if expected_run.is_some_and(|expected| identity.run_id != expected) {
-        return Err("Sessions record reports a different run identity".into());
+        return Err("terminal record reports a different run identity".into());
     }
     if identity.component_generation != component_generation {
         return Err(format!(
-            "Sessions record reports component generation {}, expected {component_generation}",
+            "terminal record reports component generation {}, expected {component_generation}",
             identity.component_generation
         ));
     }
     if identity.record_generation != management::RECORD_GENERATION
         || identity.management_generation != management::VERSION
     {
-        return Err("Sessions record reports an unsupported management generation".into());
+        return Err("terminal record reports an unsupported management generation".into());
     }
     if identity.uid != effective_uid() {
         return Err(format!(
-            "Sessions record reports UID {}, expected {}",
+            "terminal record reports UID {}, expected {}",
             identity.uid,
             effective_uid()
         ));
@@ -339,7 +339,7 @@ fn validate_management_identity(
     let presentation = PathBuf::from(OsStr::from_bytes(&identity.presentation.path));
     let runtime = presentation
         .parent()
-        .ok_or_else(|| "Sessions presentation endpoint has no parent".to_string())?;
+        .ok_or_else(|| "terminal presentation endpoint has no parent".to_string())?;
     let expected_presentation = match number {
         None => presentation
             .file_name()
@@ -350,7 +350,7 @@ fn validate_management_identity(
     };
     if !expected_presentation {
         return Err(format!(
-            "Sessions identity {} uses unexpected presentation endpoint {}",
+            "terminal identity {} uses unexpected presentation endpoint {}",
             identity.session_id,
             presentation.display()
         ));
@@ -358,7 +358,7 @@ fn validate_management_identity(
     let management_path = artifact_path(&presentation, ".management");
     if identity.management.path != management_path.as_os_str().as_bytes() {
         return Err(format!(
-            "Sessions identity {} uses an unexpected management endpoint",
+            "terminal identity {} uses an unexpected management endpoint",
             identity.session_id
         ));
     }
@@ -404,17 +404,17 @@ fn read_management_response(
         Ok(())
     };
     let mut bytes = vec![0; management::HEADER_BYTES];
-    read_exact(&mut bytes, "cannot read Sessions management result")?;
+    read_exact(&mut bytes, "cannot read terminal management result")?;
     let length = management::server_message_len(&bytes)
-        .map_err(|error| format!("invalid Sessions management result: {error}"))?
-        .ok_or("incomplete Sessions management header")?;
+        .map_err(|error| format!("invalid terminal management result: {error}"))?
+        .ok_or("incomplete terminal management header")?;
     bytes.resize(length, 0);
     read_exact(
         &mut bytes[management::HEADER_BYTES..],
-        "cannot read complete Sessions management result",
+        "cannot read complete terminal management result",
     )?;
     management::decode_server_message(&bytes)
-        .map_err(|error| format!("invalid Sessions management result: {error}"))
+        .map_err(|error| format!("invalid terminal management result: {error}"))
 }
 
 fn validate_management_peer(stream: &UnixStream, identity: &LiveIdentity) -> Result<(), String> {
@@ -432,22 +432,22 @@ fn validate_management_peer(stream: &UnixStream, identity: &LiveIdentity) -> Res
     } == -1
         || length as usize != std::mem::size_of::<libc::ucred>()
     {
-        return Err("cannot validate Sessions management peer credentials".into());
+        return Err("cannot validate terminal management peer credentials".into());
     }
     if u32::try_from(credentials.pid).ok() != Some(identity.process_id)
         || credentials.uid != identity.uid
     {
-        return Err("Sessions management peer differs from its Ready process identity".into());
+        return Err("terminal management peer differs from its Ready process identity".into());
     }
     let stat = fs::read_to_string(format!("/proc/{}/stat", identity.process_id))
-        .map_err(|error| format!("cannot validate Sessions process identity: {error}"))?;
+        .map_err(|error| format!("cannot validate terminal process identity: {error}"))?;
     let start = stat
         .rsplit_once(')')
         .and_then(|(_, fields)| fields.split_whitespace().nth(19))
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or("invalid Sessions process identity")?;
+        .ok_or("invalid terminal process identity")?;
     if start != identity.process_start {
-        return Err("Sessions process start differs from its Ready identity".into());
+        return Err("terminal process start differs from its Ready identity".into());
     }
     Ok(())
 }
@@ -458,7 +458,7 @@ fn acquire_management(
 ) -> Result<RunningSession, String> {
     let current = read_management_record(&candidate.record_path)?.ok_or_else(|| {
         format!(
-            "Sessions record {} disappeared",
+            "terminal record {} disappeared",
             candidate.record_path.display()
         )
     })?;
@@ -466,53 +466,53 @@ fn acquire_management(
         || current.record != ManagementRecord::Live(candidate.identity.clone())
     {
         return Err(format!(
-            "Sessions record {} changed before lease acquisition",
+            "terminal record {} changed before lease acquisition",
             candidate.record_path.display()
         ));
     }
     let management_path = Path::new(OsStr::from_bytes(&candidate.identity.management.path));
     endpoint_matches(management_path, &candidate.identity.management)?;
-    let timeout = operation_timeout(deadline, "Sessions lease acquisition")?;
+    let timeout = operation_timeout(deadline, "terminal lease acquisition")?;
     let mut stream = unix_connect_with_timeout(management_path, timeout).map_err(|error| {
         format!(
-            "cannot connect to Sessions management endpoint {}: {error}",
+            "cannot connect to terminal management endpoint {}: {error}",
             management_path.display()
         )
     })?;
     validate_management_peer(&stream, &candidate.identity)?;
-    let timeout = operation_timeout(deadline, "Sessions lease acquisition")?;
+    let timeout = operation_timeout(deadline, "terminal lease acquisition")?;
     stream
         .set_write_timeout(Some(timeout))
-        .map_err(|error| format!("cannot bound Sessions lease acquisition: {error}"))?;
+        .map_err(|error| format!("cannot bound terminal lease acquisition: {error}"))?;
     let request = management::encode_client_message(&ManagementClientMessage::Acquire {
         expected: candidate.identity.clone(),
         record: candidate.record,
     })
-    .map_err(|error| format!("cannot encode Sessions lease request: {error}"))?;
+    .map_err(|error| format!("cannot encode terminal lease request: {error}"))?;
     stream
         .write_all(&request)
-        .map_err(|error| format!("cannot send Sessions lease request: {error}"))?;
-    match read_management_response(&mut stream, deadline, "Sessions lease acquisition")? {
+        .map_err(|error| format!("cannot send terminal lease request: {error}"))?;
+    match read_management_response(&mut stream, deadline, "terminal lease acquisition")? {
         ManagementServerMessage::Lease(identity) if identity == candidate.identity => {}
         ManagementServerMessage::Busy => {
             return Err(format!(
-                "Sessions run {} is already managed",
+                "terminal run {} is already managed",
                 candidate.identity.run_id
             ));
         }
         ManagementServerMessage::Failure(failure) => {
             return Err(format!(
-                "Sessions rejected lease acquisition: {}",
+                "terminal rejected lease acquisition: {}",
                 failure.detail
             ));
         }
-        _ => return Err("Sessions returned the wrong lease result".into()),
+        _ => return Err("terminal returned the wrong lease result".into()),
     }
     stream
         .set_read_timeout(None)
         .and_then(|()| stream.set_write_timeout(None))
         .and_then(|()| stream.set_nonblocking(true))
-        .map_err(|error| format!("cannot configure Sessions management lease: {error}"))?;
+        .map_err(|error| format!("cannot configure terminal management lease: {error}"))?;
     Ok(RunningSession {
         number: candidate.number,
         id: candidate.identity.session_id.clone(),
@@ -527,7 +527,7 @@ fn acquire_management(
 fn cleanup_record(path: &Path, expected: ObjectIdentity) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         format!(
-            "cannot inspect ended Sessions record {}: {error}",
+            "cannot inspect ended terminal record {}: {error}",
             path.display()
         )
     })?;
@@ -537,13 +537,13 @@ fn cleanup_record(path: &Path, expected: ObjectIdentity) -> Result<(), String> {
         || object_identity(&metadata) != expected
     {
         return Err(format!(
-            "ended Sessions record {} changed before cleanup",
+            "ended terminal record {} changed before cleanup",
             path.display()
         ));
     }
     fs::remove_file(path).map_err(|error| {
         format!(
-            "cannot remove ended Sessions record {}: {error}",
+            "cannot remove ended terminal record {}: {error}",
             path.display()
         )
     })
@@ -555,21 +555,21 @@ fn recorded_process_is_dead(identity: &LiveIdentity) -> Result<bool, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(error) => {
             return Err(format!(
-                "cannot validate Sessions process identity: {error}"
+                "cannot validate terminal process identity: {error}"
             ));
         }
     };
     let mut fields = stat
         .rsplit_once(')')
         .map(|(_, fields)| fields.split_whitespace())
-        .ok_or("invalid Sessions process identity")?;
-    let state = fields.next().ok_or("invalid Sessions process identity")?;
+        .ok_or("invalid terminal process identity")?;
+    let state = fields.next().ok_or("invalid terminal process identity")?;
     let start = fields
         .nth(18)
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or("invalid Sessions process identity")?;
+        .ok_or("invalid terminal process identity")?;
     if start != identity.process_start {
-        return Err("Sessions process start differs from its Ready identity".into());
+        return Err("terminal process start differs from its Ready identity".into());
     }
     Ok(matches!(state, "Z" | "X"))
 }
@@ -580,7 +580,7 @@ fn remove_dead_endpoint(path: &Path, expected: &EndpointIdentity) -> Result<(), 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
-                "cannot inspect dead Sessions endpoint {}: {error}",
+                "cannot inspect dead terminal endpoint {}: {error}",
                 path.display()
             ));
         }
@@ -591,13 +591,13 @@ fn remove_dead_endpoint(path: &Path, expected: &EndpointIdentity) -> Result<(), 
         || object_identity(&metadata) != expected.object
     {
         return Err(format!(
-            "dead Sessions endpoint {} changed before cleanup",
+            "dead terminal endpoint {} changed before cleanup",
             path.display()
         ));
     }
     fs::remove_file(path).map_err(|error| {
         format!(
-            "cannot remove dead Sessions endpoint {}: {error}",
+            "cannot remove dead terminal endpoint {}: {error}",
             path.display()
         )
     })
@@ -612,7 +612,7 @@ pub(super) fn recover_sessions(
     let mut paths = fs::read_dir(runtime)
         .map_err(|error| {
             format!(
-                "cannot list Sessions runtime {}: {error}",
+                "cannot list terminal runtime {}: {error}",
                 runtime.display()
             )
         })?
@@ -622,14 +622,14 @@ pub(super) fn recover_sessions(
             }
             Ok(_) => None,
             Err(error) => Some(Err(format!(
-                "cannot inspect Sessions entry in {}: {error}",
+                "cannot inspect terminal entry in {}: {error}",
                 runtime.display()
             ))),
         })
         .collect::<Result<Vec<_>, _>>()?;
     if paths.len() > MAX_SESSIONS + 1 {
         return Err(format!(
-            "Sessions runtime {} exceeds the {}-record recovery limit",
+            "terminal runtime {} exceeds the {}-record recovery limit",
             runtime.display(),
             MAX_SESSIONS + 1
         ));
@@ -644,9 +644,9 @@ pub(super) fn recover_sessions(
     let mut pickers = Vec::new();
     let mut numbers = HashSet::new();
     for record_path in paths {
-        operation_timeout(deadline, "Sessions recovery")?;
+        operation_timeout(deadline, "terminal recovery")?;
         let snapshot = read_management_record(&record_path)?
-            .ok_or_else(|| format!("Sessions record {} disappeared", record_path.display()))?;
+            .ok_or_else(|| format!("terminal record {} disappeared", record_path.display()))?;
         let identity = match snapshot.record {
             ManagementRecord::Live(identity) => identity,
             ManagementRecord::Tombstone(tombstone) => {
@@ -658,7 +658,7 @@ pub(super) fn recover_sessions(
                 )?;
                 if artifact_path(&endpoint, ".record") != record_path {
                     return Err(format!(
-                        "ended Sessions record {} has the wrong identity path",
+                        "ended terminal record {} has the wrong identity path",
                         record_path.display()
                     ));
                 }
@@ -670,7 +670,7 @@ pub(super) fn recover_sessions(
                     {
                         break;
                     }
-                    operation_timeout(deadline, "ended Sessions cleanup")?;
+                    operation_timeout(deadline, "ended terminal cleanup")?;
                     thread::sleep(Duration::from_millis(25));
                 }
                 cleanup_record(&record_path, snapshot.object)?;
@@ -681,7 +681,7 @@ pub(super) fn recover_sessions(
             validate_management_identity(&identity, component_generation, None, false)?;
         if artifact_path(&endpoint, ".record") != record_path {
             return Err(format!(
-                "Sessions record {} has the wrong presentation identity",
+                "terminal record {} has the wrong presentation identity",
                 record_path.display()
             ));
         }
@@ -704,7 +704,7 @@ pub(super) fn recover_sessions(
         };
         if let Some(number) = number {
             if !numbers.insert(number) {
-                return Err(format!("duplicate live Sessions identity session-{number}"));
+                return Err(format!("duplicate live terminal identity session-{number}"));
             }
             candidates.push(candidate);
         } else {
@@ -713,7 +713,7 @@ pub(super) fn recover_sessions(
     }
     candidates.sort_by_key(|candidate| candidate.number);
     if mode == LaunchMode::Terminal && candidates.len() > 1 {
-        return Err("EonTerm cannot recover more than one live Session".into());
+        return Err("EonTerm cannot recover more than one live terminal".into());
     }
 
     let recovered_picker = !pickers.is_empty();
@@ -770,9 +770,9 @@ pub(super) fn start_orbit(
         Ok(orbit) => orbit,
         Err(error) => {
             return match claim.remove_empty() {
-                Ok(()) => Err(format!("cannot launch Sessions: {error}")),
+                Ok(()) => Err(format!("cannot launch terminal: {error}")),
                 Err(cleanup_error) => Err(format!(
-                    "cannot launch Sessions: {error}; cannot roll back Sessions: {cleanup_error}"
+                    "cannot launch terminal: {error}; cannot roll back terminal: {cleanup_error}"
                 )),
             };
         }
@@ -791,10 +791,10 @@ pub(super) fn start_orbit(
                 }) => {
                     if let Some(status) = orbit
                         .try_wait()
-                        .map_err(|error| format!("cannot observe Sessions startup: {error}"))?
+                        .map_err(|error| format!("cannot observe terminal startup: {error}"))?
                     {
                         return Err(format!(
-                            "Sessions exited before its management lease was acquired (status {})",
+                            "terminal exited before its management lease was acquired (status {})",
                             status_code(status)
                         ));
                     }
@@ -805,7 +805,7 @@ pub(super) fn start_orbit(
                         true,
                     )?;
                     if identity.session_id != session_id || endpoint != socket {
-                        return Err("Sessions Ready identity does not match its launch".into());
+                        return Err("terminal Ready identity does not match its launch".into());
                     }
                     return acquire_management(
                         ManagedCandidate {
@@ -822,21 +822,21 @@ pub(super) fn start_orbit(
                     record: ManagementRecord::Tombstone(_),
                     ..
                 }) => {
-                    return Err("Sessions ended before its management lease was acquired".into());
+                    return Err("terminal ended before its management lease was acquired".into());
                 }
                 None => {
                     if let Some(status) = orbit
                         .try_wait()
-                        .map_err(|error| format!("cannot observe Sessions startup: {error}"))?
+                        .map_err(|error| format!("cannot observe terminal startup: {error}"))?
                     {
                         return if claim.exact_path_is_empty()? {
                             Err(format!(
-                                "Sessions exited before publishing Ready (status {})",
+                                "terminal exited before publishing Ready (status {})",
                                 status_code(status)
                             ))
                         } else {
                             Err(format!(
-                                "Sessions exited before its management lease was acquired (status {})",
+                                "terminal exited before its management lease was acquired (status {})",
                                 status_code(status)
                             ))
                         };
@@ -844,7 +844,7 @@ pub(super) fn start_orbit(
                     if Instant::now() < deadline {
                         thread::sleep(Duration::from_millis(25));
                     } else {
-                        return Err("Sessions did not publish Ready within five seconds".into());
+                        return Err("terminal did not publish Ready within five seconds".into());
                     }
                 }
             }
@@ -857,7 +857,7 @@ pub(super) fn start_orbit(
         }
         Err(error) => match rollback_unleased_orbit(orbit, claim, deadline) {
             Ok(()) => Err(error),
-            Err(stop_error) => Err(format!("{error}; cannot roll back Sessions: {stop_error}")),
+            Err(stop_error) => Err(format!("{error}; cannot roll back terminal: {stop_error}")),
         },
     }
 }
@@ -903,7 +903,7 @@ fn rollback_unleased_orbit(
         deadline,
     )?;
     session.child = Some(orbit);
-    let timeout = operation_timeout(deadline, "Sessions rollback")?;
+    let timeout = operation_timeout(deadline, "terminal rollback")?;
     stop_managed_sessions(std::slice::from_mut(&mut session), timeout).map(|_| ())
 }
 
@@ -953,11 +953,11 @@ fn endpoint_removed(path: &Path, expected: ObjectIdentity) -> Result<bool, Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Ok(metadata) if object_identity(&metadata) == expected => Ok(false),
         Ok(_) => Err(format!(
-            "Sessions endpoint {} was replaced during cleanup",
+            "terminal endpoint {} was replaced during cleanup",
             path.display()
         )),
         Err(error) => Err(format!(
-            "cannot observe Sessions endpoint cleanup {}: {error}",
+            "cannot observe terminal endpoint cleanup {}: {error}",
             path.display()
         )),
     }
@@ -972,24 +972,24 @@ fn wait_and_finalize_tombstone(
     let (outcome, record_object) = loop {
         let snapshot = read_management_record(&session.record)?.ok_or_else(|| {
             format!(
-                "ended Sessions record {} disappeared",
+                "ended terminal record {} disappeared",
                 session.record.display()
             )
         })?;
         match snapshot.record {
             ManagementRecord::Live(identity) if identity == session.identity => {
-                operation_timeout(deadline, "Sessions tombstone reconciliation")?;
+                operation_timeout(deadline, "terminal tombstone reconciliation")?;
                 thread::sleep(Duration::from_millis(25));
             }
             ManagementRecord::Tombstone(tombstone)
                 if tombstone.identity == session.identity && tombstone.reason == reason =>
             {
                 if response.is_some_and(|response| response != &tombstone) {
-                    return Err("Sessions stop result differs from its terminal record".into());
+                    return Err("terminal stop result differs from its final record".into());
                 }
                 break (tombstone.outcome, snapshot.object);
             }
-            _ => return Err("Sessions terminal record does not match the acquired run".into()),
+            _ => return Err("terminal final record does not match the acquired run".into()),
         }
     };
     let management_path = Path::new(OsStr::from_bytes(&session.identity.management.path));
@@ -999,19 +999,19 @@ fn wait_and_finalize_tombstone(
         {
             break;
         }
-        operation_timeout(deadline, "Sessions endpoint cleanup")?;
+        operation_timeout(deadline, "terminal endpoint cleanup")?;
         thread::sleep(Duration::from_millis(25));
     }
     if let Some(child) = &mut session.child {
         loop {
             if child
                 .try_wait()
-                .map_err(|error| format!("cannot reap ended Sessions: {error}"))?
+                .map_err(|error| format!("cannot reap ended terminal: {error}"))?
                 .is_some()
             {
                 break;
             }
-            operation_timeout(deadline, "Sessions process reaping")?;
+            operation_timeout(deadline, "terminal process reaping")?;
             thread::sleep(Duration::from_millis(25));
         }
     }
@@ -1022,7 +1022,7 @@ fn wait_and_finalize_tombstone(
 pub(super) fn session_finished(session: &mut RunningSession) -> Result<Option<i32>, String> {
     match session.lease.read(&mut [0]) {
         Ok(0) => {}
-        Ok(_) => return Err("Sessions sent an unsolicited management result".into()),
+        Ok(_) => return Err("terminal sent an unsolicited management result".into()),
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
         Err(_) => {}
@@ -1045,20 +1045,20 @@ pub(super) fn stop_managed_sessions(
 ) -> Result<Vec<String>, String> {
     let deadline = Instant::now() + timeout;
     let request = management::encode_client_message(&ManagementClientMessage::Stop)
-        .map_err(|error| format!("cannot encode Sessions stop: {error}"))?;
+        .map_err(|error| format!("cannot encode terminal stop: {error}"))?;
     let mut writes = Vec::with_capacity(sessions.len());
     for session in sessions.iter_mut() {
         let result = (|| {
-            let remaining = operation_timeout(deadline, "Sessions stop")?;
+            let remaining = operation_timeout(deadline, "terminal stop")?;
             session
                 .lease
                 .set_nonblocking(false)
                 .and_then(|()| session.lease.set_write_timeout(Some(remaining)))
-                .map_err(|error| format!("cannot bound Sessions stop: {error}"))?;
+                .map_err(|error| format!("cannot bound terminal stop: {error}"))?;
             session
                 .lease
                 .write_all(&request)
-                .map_err(|error| format!("cannot send Sessions stop: {error}"))
+                .map_err(|error| format!("cannot send terminal stop: {error}"))
         })();
         writes.push(result);
     }
@@ -1066,7 +1066,7 @@ pub(super) fn stop_managed_sessions(
     let mut errors = Vec::new();
     for (session, write) in sessions.iter_mut().zip(writes) {
         let response = if write.is_ok() {
-            match read_management_response(&mut session.lease, deadline, "Sessions stop response") {
+            match read_management_response(&mut session.lease, deadline, "terminal stop response") {
                 Ok(ManagementServerMessage::Stopped(tombstone))
                     if tombstone.identity == session.identity
                         && tombstone.reason == TerminationReason::ExplicitStop =>
@@ -1074,11 +1074,11 @@ pub(super) fn stop_managed_sessions(
                     Some(Ok(tombstone))
                 }
                 Ok(ManagementServerMessage::Failure(failure)) => Some(Err(format!(
-                    "Sessions rejected stop for {}: {}",
+                    "terminal rejected stop for {}: {}",
                     session.id, failure.detail
                 ))),
                 Ok(_) => Some(Err(format!(
-                    "Sessions returned the wrong stop result for {}",
+                    "terminal returned the wrong stop result for {}",
                     session.id
                 ))),
                 Err(_) => None,
@@ -1116,7 +1116,7 @@ pub(super) fn stop_managed_sessions(
                 .and_then(|()| session.lease.set_nonblocking(true))
             {
                 errors.push(format!(
-                    "{}: cannot restore Sessions management lease after failed stop: {error}",
+                    "{}: cannot restore terminal management lease after failed stop: {error}",
                     session.id
                 ));
             }
@@ -1224,7 +1224,7 @@ mod tests {
         let result = read_management_response(
             &mut reader,
             started + Duration::from_millis(80),
-            "Sessions management response",
+            "terminal management response",
         );
         let elapsed = started.elapsed();
         drop(reader);

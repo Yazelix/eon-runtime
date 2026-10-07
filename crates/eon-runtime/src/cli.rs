@@ -292,7 +292,7 @@ fn browse_directory(
         .arg(chooser_file)
         .arg("--")
         .arg(directory)
-        // Yazi prefers PWD even when it disagrees with the Session's actual CWD.
+        // Yazi prefers PWD even when it disagrees with the terminal's actual CWD.
         .env_remove("PWD")
         .env("YAZI_CONFIG_HOME", config)
         .env(
@@ -427,7 +427,7 @@ fn print_help(inputs: &Inputs) -> Result<i32, String> {
         ("", "", "")
     };
     write_stdout(format!(
-        "{heading}Eon{reset} {version}  ·  Terminal workspaces. Persistent Sessions.
+        "{heading}Eon{reset} {version}  ·  Terminal workspaces. Persistent terminals.
 
 {heading}Usage{reset}  {command}eon [COMMAND]{reset}
 
@@ -438,14 +438,14 @@ fn print_help(inputs: &Inputs) -> Result<i32, String> {
 {heading}Windows{reset}
   {command}window new{reset}                                  Open an independent window
   {command}window attach ID{reset}                            Reopen a window
-  {command}window stop ID [--json]{reset}                     End that window's Sessions
-  {command}window stop all{reset}                             End every window's Sessions
+  {command}window stop ID [--json]{reset}                     End that window's terminals
+  {command}window stop all{reset}                             End every window's terminals
   {command}windows [--json]{reset}                            List independent windows
 
-{heading}Sessions{reset}
+{heading}Attach & stop{reset}
   {command}attach [GENERATION]{reset}                         Reattach to current or named work
   {command}generations [--json]{reset}                        List current and older work
-  {command}stop GENERATION|previous|all [--json]{reset}       End selected Sessions
+  {command}stop GENERATION|previous|all [--json]{reset}       End selected terminals
 
 {heading}Tabs & panes{reset}
   {command}workspace [--json]{reset}                          Inspect the workspace
@@ -468,7 +468,7 @@ fn print_help(inputs: &Inputs) -> Result<i32, String> {
   {command}eon windows --json{reset}                          Inspect windows as JSON
   {command}eon anima --help{reset}                            Browse animation styles/options
 
-Closing a window detaches. Stop ends its Sessions.
+Closing a window detaches. Stop ends its terminals.
 Where shown, {command}--json{reset} prints JSON and skips Stop confirmation.
 ",
         version = inputs.version

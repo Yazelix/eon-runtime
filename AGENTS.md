@@ -9,7 +9,7 @@ This repository owns the cohesive `eon-runtime` library and canonical
 `run(Inputs)` through the concrete root exports. Eon supplies product version,
 defaults, validated component facts, launch paths and immutable assembly inputs.
 Runtime owns configuration parsing, lifecycle, workspace state and generation.
-Orbit owns Sessions and terminal state; Venus owns native presentation.
+Orbit owns terminals and terminal state; Venus owns native presentation.
 
 Keep runtime and codec package versions and source identities independent.
 Preserve historical EONW revisions; equal version labels do not prove package
@@ -24,7 +24,7 @@ Rust owns implementation; Eon owns Nix composition and product distribution.
 
 Work on `edge`. `main` and `stable` are promotion-only channels, preserving
 `stable ⊆ main ⊆ edge`; do not create or promote them without user direction.
-Preserve concurrent work and live Sessions. Never reset, force-push or restart
+Preserve concurrent work and live terminals. Never reset, force-push or restart
 user processes automatically.
 
 The extraction plan and acceptance records live in Eon's Beads graph. Use `br`
