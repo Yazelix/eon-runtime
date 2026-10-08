@@ -820,7 +820,7 @@ fn supervise(
                 return Ok(state.initial_status.unwrap_or(0));
             }
 
-            if !state.stopping && reap_presentation(&mut state, inputs, config)? {
+            if reap_presentation(&mut state, inputs, config)? && !state.stopping {
                 match mode {
                     LaunchMode::Workspace => eprintln!(
                         "Eon Desktop exited; terminals remain active. Run `eon attach {generation}` to reconnect."
@@ -1125,7 +1125,9 @@ fn reap_presentation(
     };
     if exited {
         state.venus = None;
-        cancel_transient_popups(state, inputs, config)?;
+        if !state.stopping {
+            cancel_transient_popups(state, inputs, config)?;
+        }
     }
     Ok(exited)
 }
