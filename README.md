@@ -27,6 +27,11 @@ contribution to compute one `g1-` generation. Mutable configuration, live state
 and store/profile paths do not become generation identity. Orbit remains the
 terminal owner; Venus remains the native presentation owner.
 
+When an acquired Orbit dies without a final result, Runtime validates the dead
+process and original Live record before retiring its exact residue. Healthy
+terminals remain usable; owner loss is a local failure, not a successful Stop
+or a fabricated terminal outcome.
+
 The accepted concrete assembly is illustrated by Eon's
 [product inputs](https://github.com/Yazelix/eon/blob/e431d7583c84ff574054d2edf556e9827114987e/crates/eon/src/product.rs).
 Select Git dependencies by exact accepted commit and package name; crates are
@@ -104,10 +109,10 @@ artifacts.
 
 | Surface | Lines |
 |---|---:|
-| Rust source and tests | 13,947 |
+| Rust source and tests | 14,126 |
 | Cargo manifests | 26 |
 | Agent guidelines | 38 |
-| README | 113 |
+| README | 118 |
 | License and notice | 209 |
 | Repository ignore rules | 1 |
-| **Total** | **14,334** |
+| **Total** | **14,518** |

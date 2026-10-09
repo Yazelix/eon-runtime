@@ -518,6 +518,7 @@ fn acquire_management(
         id: candidate.identity.session_id.clone(),
         endpoint: candidate.endpoint,
         record: candidate.record_path,
+        record_object: candidate.record,
         identity: candidate.identity,
         lease: stream,
         child: None,
@@ -602,6 +603,24 @@ fn remove_dead_endpoint(path: &Path, expected: &EndpointIdentity) -> Result<(), 
             path.display()
         )
     })
+}
+
+fn retire_dead_run(
+    record: &Path,
+    object: ObjectIdentity,
+    identity: &LiveIdentity,
+    deadline: Instant,
+) -> Result<(), String> {
+    remove_dead_endpoint(
+        Path::new(OsStr::from_bytes(&identity.presentation.path)),
+        &identity.presentation,
+    )?;
+    remove_dead_endpoint(
+        Path::new(OsStr::from_bytes(&identity.management.path)),
+        &identity.management,
+    )?;
+    reap_untracked_child(identity.process_id, deadline)?;
+    cleanup_record(record, object)
 }
 
 pub(super) fn recover_sessions(
@@ -716,13 +735,7 @@ pub(super) fn acquire_generation_sessions(
             ));
         }
         if recorded_process_is_dead(&identity)? {
-            remove_dead_endpoint(&endpoint, &identity.presentation)?;
-            remove_dead_endpoint(
-                Path::new(OsStr::from_bytes(&identity.management.path)),
-                &identity.management,
-            )?;
-            reap_untracked_child(identity.process_id, deadline)?;
-            cleanup_record(&record_path, snapshot.object)?;
+            retire_dead_run(&record_path, snapshot.object, &identity, deadline)?;
             continue;
         }
         validate_management_identity(&identity, component_generation, None, true)?;
@@ -759,10 +772,17 @@ pub(super) struct RunningSession {
     pub(super) id: String,
     pub(super) endpoint: PathBuf,
     record: PathBuf,
+    record_object: ObjectIdentity,
     identity: LiveIdentity,
     lease: UnixStream,
     child: Option<Child>,
-    finished: Option<(TerminationReason, ProcessOutcome)>,
+    finished: Option<SessionEnd>,
+}
+
+#[derive(Clone, Copy)]
+enum SessionEnd {
+    Managed(TerminationReason, ProcessOutcome),
+    OwnerLost,
 }
 
 impl RunningSession {
@@ -1026,7 +1046,7 @@ fn wait_and_finalize_tombstone(
     reason: TerminationReason,
     response: Option<&Tombstone>,
     deadline: Instant,
-) -> Result<ProcessOutcome, String> {
+) -> Result<SessionEnd, String> {
     let (outcome, record_object) = loop {
         let snapshot = read_management_record(&session.record)?.ok_or_else(|| {
             format!(
@@ -1036,6 +1056,29 @@ fn wait_and_finalize_tombstone(
         })?;
         match snapshot.record {
             ManagementRecord::Live(identity) if identity == session.identity => {
+                if recorded_process_is_dead(&identity)? {
+                    // Death can race Orbit's final atomic record publication.
+                    let current = read_management_record(&session.record)?
+                        .ok_or("ended terminal record disappeared")?;
+                    if current.record != ManagementRecord::Live(identity.clone()) {
+                        operation_timeout(deadline, "terminal tombstone reconciliation")?;
+                        continue;
+                    }
+                    if current.object != session.record_object {
+                        return Err("terminal Live record changed before cleanup".into());
+                    }
+                    retire_dead_run(&session.record, current.object, &identity, deadline)?;
+                    session.finished = Some(SessionEnd::OwnerLost);
+                    eprintln!(
+                        "terminal {}: Orbit exited without publishing a terminal result",
+                        session.id
+                    );
+                    return if reason == TerminationReason::NaturalExit {
+                        Ok(SessionEnd::OwnerLost)
+                    } else {
+                        Err("terminal owner exited without completing Stop".into())
+                    };
+                }
                 operation_timeout(deadline, "terminal tombstone reconciliation")?;
                 thread::sleep(Duration::from_millis(25));
             }
@@ -1076,13 +1119,14 @@ fn wait_and_finalize_tombstone(
         reap_untracked_child(session.identity.process_id, deadline)?;
     }
     cleanup_record(&session.record, record_object)?;
-    session.finished = Some((reason, outcome));
-    Ok(outcome)
+    let end = SessionEnd::Managed(reason, outcome);
+    session.finished = Some(end);
+    Ok(end)
 }
 
 pub(super) fn session_finished(session: &mut RunningSession) -> Result<Option<i32>, String> {
-    let outcome = if let Some((_, outcome)) = session.finished {
-        outcome
+    let end = if let Some(end) = session.finished {
+        end
     } else {
         match session.lease.read(&mut [0]) {
             Ok(0) => {}
@@ -1098,9 +1142,9 @@ pub(super) fn session_finished(session: &mut RunningSession) -> Result<Option<i3
             Instant::now() + SESSION_START_TIMEOUT,
         )?
     };
-    Ok(Some(match outcome {
-        ProcessOutcome::ExitCode(code) => code,
-        ProcessOutcome::Signal(_) => 1,
+    Ok(Some(match end {
+        SessionEnd::Managed(_, ProcessOutcome::ExitCode(code)) => code,
+        SessionEnd::Managed(_, ProcessOutcome::Signal(_)) | SessionEnd::OwnerLost => 1,
     }))
 }
 
@@ -1193,7 +1237,10 @@ pub(super) fn stop_managed_sessions(
         Ok(sessions
             .iter()
             .filter(|session| {
-                matches!(session.finished, Some((TerminationReason::ExplicitStop, _)))
+                matches!(
+                    session.finished,
+                    Some(SessionEnd::Managed(TerminationReason::ExplicitStop, _))
+                )
             })
             .map(|session| session.id.clone())
             .collect())
@@ -1242,6 +1289,139 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn lost_owner_cleanup_requires_death_and_original_owned_objects() {
+        let root = temporary_directory();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let process = PathBuf::from(format!("/proc/{}", child.id()));
+        let start = fs::read_to_string(process.join("stat"))
+            .unwrap()
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let endpoint = root.join("orbit.sock");
+        let management_path = root.join("orbit.sock.management");
+        let _presentation = UnixListener::bind(&endpoint).unwrap();
+        let _management = UnixListener::bind(&management_path).unwrap();
+        for path in [&endpoint, &management_path] {
+            fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        }
+        let endpoint_identity = |path: &Path| EndpointIdentity {
+            path: path.as_os_str().as_bytes().to_vec(),
+            object: super::object_identity(&fs::symlink_metadata(path).unwrap()),
+        };
+        let identity = LiveIdentity {
+            session_id: "session-1".into(),
+            run_id: "lost-owner".into(),
+            component_generation: "component-1".into(),
+            record_generation: management::RECORD_GENERATION,
+            management_generation: management::VERSION,
+            process_id: child.id(),
+            process_start: start,
+            uid: super::effective_uid(),
+            presentation: endpoint_identity(&endpoint),
+            management: endpoint_identity(&management_path),
+        };
+        let record = root.join("orbit.sock.record");
+        let bytes = management::encode_record(&ManagementRecord::Live(identity.clone())).unwrap();
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&record)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let (lease, peer) = UnixStream::pair().unwrap();
+        lease.set_nonblocking(true).unwrap();
+        drop(peer);
+        let mut session = RunningSession {
+            number: Some(1),
+            id: identity.session_id.clone(),
+            endpoint: endpoint.clone(),
+            record: record.clone(),
+            record_object: super::object_identity(&fs::symlink_metadata(&record).unwrap()),
+            identity,
+            lease,
+            child: None,
+            finished: None,
+        };
+        assert!(
+            super::wait_and_finalize_tombstone(
+                &mut session,
+                TerminationReason::NaturalExit,
+                None,
+                Instant::now() + Duration::from_millis(10),
+            )
+            .is_err()
+        );
+        assert!(record.exists() && endpoint.exists() && management_path.exists());
+        assert!(!session.is_finished());
+        child.kill().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !super::recorded_process_is_dead(&session.identity).unwrap() {
+            assert!(Instant::now() < deadline, "test owner did not exit");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let held_record = root.join("held-record");
+        fs::rename(&record, &held_record).unwrap();
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&record)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        assert!(super::session_finished(&mut session).is_err());
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+        assert!(endpoint.exists() && management_path.exists());
+        fs::remove_file(&record).unwrap();
+        fs::rename(held_record, &record).unwrap();
+
+        let held_endpoint = root.join("held-endpoint");
+        fs::rename(&endpoint, &held_endpoint).unwrap();
+        let replacement = UnixListener::bind(&endpoint).unwrap();
+        fs::set_permissions(
+            &endpoint,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
+        assert!(super::session_finished(&mut session).is_err());
+        assert!(record.exists() && endpoint.exists());
+        fs::remove_file(&endpoint).unwrap();
+        drop(replacement);
+        fs::rename(held_endpoint, &endpoint).unwrap();
+
+        assert!(
+            super::wait_and_finalize_tombstone(
+                &mut session,
+                TerminationReason::ExplicitStop,
+                None,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert_eq!(super::session_finished(&mut session).unwrap(), Some(1));
+        assert!(session.is_finished());
+        assert!(!process.exists(), "lost direct child was not reaped");
+        assert!(!record.exists() && !endpoint.exists() && !management_path.exists());
+        assert!(
+            stop_managed_sessions(&mut [session], Duration::from_secs(1))
+                .unwrap()
+                .is_empty(),
+            "owner loss was reported as successful Stop"
+        );
+        let _ = child.wait();
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn discovery_reaps_untracked_ended_children_before_removing_records() {
@@ -1431,6 +1611,7 @@ mod tests {
                 number: Some(number),
                 id: identity.session_id.clone(),
                 endpoint,
+                record_object: super::object_identity(&fs::symlink_metadata(&record).unwrap()),
                 record,
                 identity,
                 lease,
